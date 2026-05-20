@@ -227,8 +227,10 @@ func (p *Provider) prepareMessagesForRequest(messages []Message) []Message {
 func (p *Provider) requiresToolRoundReasoningReplay() bool {
 	return p.providerName == "deepseek" ||
 		p.providerName == "mimo" ||
+		p.providerName == "moonshot" ||
 		isDeepSeekHost(p.apiBase) ||
-		isMiMoHost(p.apiBase)
+		isMiMoHost(p.apiBase) ||
+		isMoonshotHost(p.apiBase)
 }
 
 func isDeepSeekHost(apiBase string) bool {
@@ -247,6 +249,25 @@ func isMiMoHost(apiBase string) bool {
 	}
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 	return host == "xiaomimimo.com" || strings.HasSuffix(host, ".xiaomimimo.com")
+}
+
+// isMoonshotHost matches Moonshot (Kimi) API hosts. When ``thinking`` is
+// enabled (e.g. on kimi-k2.6), Moonshot rejects assistant messages in a tool
+// interaction round if ``reasoning_content`` is missing:
+//
+//	"thinking is enabled but reasoning_content is missing in assistant tool
+//	call message at index N"
+//
+// Treating Moonshot the same as DeepSeek/MiMo keeps the field on replay for
+// tool-interaction turns and strips it elsewhere.
+func isMoonshotHost(apiBase string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(apiBase))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "moonshot.cn" || strings.HasSuffix(host, ".moonshot.cn") ||
+		host == "moonshot.ai" || strings.HasSuffix(host, ".moonshot.ai")
 }
 
 func filterReasoningReplayMessages(messages []Message) []Message {

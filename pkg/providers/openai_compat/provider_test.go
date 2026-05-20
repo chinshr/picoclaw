@@ -690,6 +690,92 @@ func TestProviderChat_MiMoHostUsesReasoningReplayRules(t *testing.T) {
 	assertAssistantReasoningOmitted(t, reqMessages, 1, "MiMo")
 }
 
+// TestProviderChat_MoonshotPreservesReasoningContentForToolTurnHistory pins
+// the workaround for Moonshot's "thinking is enabled but reasoning_content is
+// missing in assistant tool call message at index N" 400 error: when the
+// provider name is moonshot (or the host is moonshot.{cn,ai}), the
+// reasoning_content field MUST be preserved on assistant messages that
+// participate in a tool-interaction round.
+func TestProviderChat_MoonshotPreservesReasoningContentForToolTurnHistory(t *testing.T) {
+	var requestBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp := map[string]any{
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"content": "ok"},
+					"finish_reason": "stop",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := NewProvider("key", server.URL, "")
+	p.SetProviderName("moonshot")
+
+	messages := []Message{
+		{Role: "user", Content: "Log feedback: dog treats are too big."},
+		{
+			Role:             "assistant",
+			Content:          "",
+			ReasoningContent: "I should append a note to the daily file.",
+			ToolCalls: []ToolCall{{
+				ID:   "call_log",
+				Type: "function",
+				Function: &FunctionCall{
+					Name:      "exec",
+					Arguments: `{"action":"run","command":"echo feedback >> notes.md"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call_log", Content: ""},
+		{Role: "user", Content: "Anything else?"},
+	}
+
+	_, err := p.Chat(t.Context(), messages, nil, "kimi-k2.6", nil)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	reqMessages, ok := requestBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages is not []any: %T", requestBody["messages"])
+	}
+	if len(reqMessages) != len(messages) {
+		t.Fatalf("len(messages) = %d, want %d", len(reqMessages), len(messages))
+	}
+
+	assistantToolMsg, ok := reqMessages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant tool call message is not map[string]any: %T", reqMessages[1])
+	}
+	if got := assistantToolMsg["reasoning_content"]; got != "I should append a note to the daily file." {
+		t.Fatalf("Moonshot assistant tool call reasoning_content = %v, want preserved", got)
+	}
+}
+
+// TestProviderChat_MoonshotHostUsesReasoningReplayRules confirms host-based
+// detection (api.moonshot.cn) works alongside provider-name based detection,
+// so users who configure model_list with just an api_base (no provider
+// override) still get the right replay behavior.
+func TestProviderChat_MoonshotHostUsesReasoningReplayRules(t *testing.T) {
+	reqMessages := runCapturedChat(
+		t,
+		"",
+		"https://api.moonshot.cn/v1",
+		nonToolReplayMessages(),
+		"kimi-k2.6",
+	)
+	assertAssistantReasoningOmitted(t, reqMessages, 1, "Moonshot")
+}
+
 func TestProviderChat_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
