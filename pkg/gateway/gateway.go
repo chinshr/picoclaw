@@ -34,6 +34,7 @@ import (
 	_ "github.com/sipeed/picoclaw/pkg/channels/teams_webhook"
 	_ "github.com/sipeed/picoclaw/pkg/channels/telegram"
 	_ "github.com/sipeed/picoclaw/pkg/channels/vk"
+	_ "github.com/sipeed/picoclaw/pkg/channels/voice"
 	_ "github.com/sipeed/picoclaw/pkg/channels/wecom"
 	_ "github.com/sipeed/picoclaw/pkg/channels/weixin"
 	_ "github.com/sipeed/picoclaw/pkg/channels/whatsapp"

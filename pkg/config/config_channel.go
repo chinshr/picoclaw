@@ -18,6 +18,7 @@ import (
 const (
 	ChannelPico           = "pico"
 	ChannelPicoClient     = "pico_client"
+	ChannelVoice          = "voice"
 	ChannelTelegram       = "telegram"
 	ChannelDiscord        = "discord"
 	ChannelFeishu         = "feishu"
@@ -42,6 +43,7 @@ const (
 func initChannel() {
 	registerSingletonChannel(ChannelPico)
 	registerSingletonChannel(ChannelPicoClient)
+	registerSingletonChannel(ChannelVoice)
 }
 
 // singletonRegistry stores which channel types are singletons (only allow one instance).
@@ -658,6 +660,7 @@ func filterSecureFields(r RawNode, secureFields map[string]struct{}) RawNode {
 var channelSettingsFactory = map[string]any{
 	ChannelPico:           (PicoSettings{}),
 	ChannelPicoClient:     (PicoClientSettings{}),
+	ChannelVoice:          (VoiceSettings{}),
 	ChannelTelegram:       (TelegramSettings{}),
 	ChannelDiscord:        (DiscordSettings{}),
 	ChannelFeishu:         (FeishuSettings{}),
@@ -771,6 +774,8 @@ func validateChannelStreamingConfig(channelName string, target any) error {
 	var streaming StreamingConfig
 	switch settings := target.(type) {
 	case *PicoSettings:
+		streaming = settings.Streaming
+	case *VoiceSettings:
 		streaming = settings.Streaming
 	case *TelegramSettings:
 		streaming = settings.Streaming

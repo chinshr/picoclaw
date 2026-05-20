@@ -621,6 +621,42 @@ type PicoClientSettings struct {
 	ReadTimeout  int          `json:"read_timeout,omitempty"  yaml:"-"`
 }
 
+// VoiceSettings configures the WebSocket "voice" channel. The transport mirrors
+// the Pico channel (so the bridge/edge wiring stays simple), but the channel is
+// tuned for streaming partial LLM utterances out to a downstream edge device
+// that does TTS playback as soon as a sentence is ready.
+type VoiceSettings struct {
+	Token           SecureString    `json:"token,omitzero"              yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_VOICE_TOKEN"`
+	AllowTokenQuery bool            `json:"allow_token_query,omitempty" yaml:"-"`
+	AllowOrigins    []string        `json:"allow_origins,omitempty"     yaml:"-"`
+	Streaming       StreamingConfig `json:"streaming,omitzero"          yaml:"-"`
+	PingInterval    int             `json:"ping_interval,omitempty"     yaml:"-"`
+	ReadTimeout     int             `json:"read_timeout,omitempty"      yaml:"-"`
+	WriteTimeout    int             `json:"write_timeout,omitempty"     yaml:"-"`
+	MaxConnections  int             `json:"max_connections,omitempty"   yaml:"-"`
+
+	// SentenceFlush controls whether the streamer flushes immediately every
+	// time a sentence-ending punctuation appears in the LLM output (so the
+	// edge can start TTS without waiting for the throttle window). Defaults
+	// to true. When false, the streamer behaves like the pico streamer.
+	SentenceFlush *bool `json:"sentence_flush,omitempty" yaml:"-"`
+}
+
+// SetToken sets the Voice token and marks it as dirty for security saving.
+func (c *VoiceSettings) SetToken(token string) {
+	c.Token = *NewSecureString(token)
+}
+
+// SentenceFlushEnabled reports whether the sentence-boundary flush is active.
+// Defaults to true when unset, matching the channel's design goal of letting
+// edge TTS start as early as possible.
+func (c *VoiceSettings) SentenceFlushEnabled() bool {
+	if c.SentenceFlush == nil {
+		return true
+	}
+	return *c.SentenceFlush
+}
+
 type IRCSettings struct {
 	Server           string              `json:"server"                     yaml:"-"                           env:"PICOCLAW_CHANNELS_IRC_SERVER"`
 	TLS              bool                `json:"tls"                        yaml:"-"                           env:"PICOCLAW_CHANNELS_IRC_TLS"`
