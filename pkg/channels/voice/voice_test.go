@@ -72,6 +72,49 @@ func TestBroadcastToSession_StripsVoicePrefix(t *testing.T) {
 	}
 }
 
+// TestSend_MarksFrameAsFinal protects against a regression where the
+// non-streaming Send path emitted a ``message.create`` without
+// ``payload.final == true``. Streaming-aware consumers (e.g. the
+// library-claw bridge) wait for that flag before resolving the turn — if
+// it's missing they buffer the content as an in-progress streaming chunk
+// and hang waiting for a terminal frame that never arrives. This bites
+// every time picoclaw falls back from ChatStream to Chat (e.g. provider
+// 429), because the fallback delivers its single reply via bus.Publish ->
+// channel.Send instead of through the streamer.
+func TestSend_MarksFrameAsFinal(t *testing.T) {
+	ch := newTestVoiceChannel(t)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	clientConn, received, cleanup := newTestVoiceWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&voiceConn{id: "conn-2", conn: clientConn, sessionID: "sess-2"})
+
+	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "voice:sess-2",
+		Content: "Go ahead — I'm listening.",
+	}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	msg := mustReceiveVoiceMessage(t, received)
+	if msg.Type != TypeMessageCreate {
+		t.Fatalf("type = %q, want %q", msg.Type, TypeMessageCreate)
+	}
+	final, ok := msg.Payload[PayloadKeyFinal].(bool)
+	if !ok || !final {
+		t.Fatalf("payload.final = %#v, want true (one-shot Send must be terminal)", msg.Payload[PayloadKeyFinal])
+	}
+	if got := msg.Payload[PayloadKeyContent]; got != "Go ahead — I'm listening." {
+		t.Fatalf("content = %#v, want %q", got, "Go ahead — I'm listening.")
+	}
+	if _, hasID := msg.Payload["message_id"].(string); !hasID {
+		t.Fatalf("payload.message_id missing or non-string: %#v", msg.Payload["message_id"])
+	}
+}
+
 // TestBeginStream_FlushesOnSentenceBoundary is the central behavior test for
 // the voice streamer: as soon as a sentence-ender appears in the streaming
 // content, the streamer should flush regardless of the throttle window.

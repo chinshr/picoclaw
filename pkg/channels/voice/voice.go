@@ -158,6 +158,15 @@ func (c *VoiceChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 	payload := map[string]any{
 		PayloadKeyContent: msg.Content,
 		"message_id":      msgID,
+		// Send delivers a complete reply in a single frame (used by the
+		// non-streaming Chat fallback when ChatStream fails before visible
+		// output, by tool-only turns, etc.). Streaming-aware consumers like
+		// the library-claw bridge wait for ``payload.final == true`` before
+		// resolving the turn — without this flag they buffer the content as
+		// an "in-progress" streaming chunk and hang waiting for a terminal
+		// frame that will never arrive. Matches voiceStreamer.Finalize's
+		// behaviour (see streamer.go: sendLocked, ``if final {...}``).
+		PayloadKeyFinal: true,
 	}
 	setContextUsagePayload(payload, msg.ContextUsage)
 	outMsg := newMessage(TypeMessageCreate, payload)
