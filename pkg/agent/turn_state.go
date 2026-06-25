@@ -84,6 +84,7 @@ const (
 
 type turnResult struct {
 	finalContent string
+	modelName    string
 	status       TurnEndStatus
 	followUps    []bus.InboundMessage
 }
@@ -113,10 +114,11 @@ type ActiveTurnInfo struct {
 
 type turnExecution struct {
 	// Core message state (accumulates throughout the turn)
-	messages        []providers.Message // built from ContextBuilder, grows per-iteration
-	pendingMessages []providers.Message // steering/SubTurn messages awaiting injection
-	history         []providers.Message // from ContextManager.Assemble
-	summary         string
+	messages         []providers.Message // built from ContextBuilder, grows per-iteration
+	pendingMessages  []providers.Message // steering/SubTurn messages awaiting injection
+	history          []providers.Message // from ContextManager.Assemble
+	summary          string
+	currentTurnStart int
 
 	// Turn output
 	finalContent string
@@ -137,9 +139,11 @@ type turnExecution struct {
 	allResponsesHandled bool
 	streamingPublisher  *streamingChunkPublisher
 	streamingFallback   bool
+	suppressReasoning   bool
 	callMessages        []providers.Message
 	providerToolDefs    []providers.ToolDefinition
 	llmModel            string
+	llmModelName        string
 	llmOpts             map[string]any
 	gracefulTerminal    bool
 	useNativeSearch     bool
@@ -161,12 +165,13 @@ func newTurnExecution(
 	messages []providers.Message,
 ) *turnExecution {
 	return &turnExecution{
-		history:         history,
-		summary:         summary,
-		messages:        messages,
-		pendingMessages: append([]providers.Message(nil), opts.InitialSteeringMessages...),
-		iteration:       0,
-		phase:           LLMPhaseSetup,
+		history:          history,
+		summary:          summary,
+		messages:         messages,
+		pendingMessages:  append([]providers.Message(nil), opts.InitialSteeringMessages...),
+		currentTurnStart: len(messages),
+		iteration:        0,
+		phase:            LLMPhaseSetup,
 	}
 }
 
@@ -177,9 +182,10 @@ func newTurnExecution(
 type turnState struct {
 	mu sync.RWMutex
 
-	agent *AgentInstance
-	opts  processOptions
-	scope turnEventScope
+	agent   *AgentInstance
+	opts    processOptions
+	profile config.EffectiveTurnProfile
+	scope   turnEventScope
 
 	turnID            string
 	agentID           string
@@ -251,6 +257,7 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 	ts := &turnState{
 		agent:        agent,
 		opts:         opts,
+		profile:      opts.TurnProfile,
 		scope:        scope,
 		turnID:       scope.turnID,
 		agentID:      agent.ID,
@@ -283,7 +290,17 @@ func (al *AgentLoop) registerActiveTurn(ts *turnState) {
 }
 
 func (al *AgentLoop) clearActiveTurn(ts *turnState) {
-	al.activeTurnStates.Delete(ts.sessionKey)
+	al.releaseSessionTurnState(ts.sessionKey, ts)
+}
+
+func (al *AgentLoop) releaseSessionTurnState(sessionKey string, expected *turnState) {
+	if expected == nil {
+		al.activeTurnStates.Delete(sessionKey)
+		return
+	}
+	if actual, ok := al.activeTurnStates.Load(sessionKey); ok && actual == expected {
+		al.activeTurnStates.Delete(sessionKey)
+	}
 }
 
 func (al *AgentLoop) getActiveTurnState(sessionKey string) *turnState {
@@ -638,13 +655,17 @@ func (ts *turnState) recordPersistedMessage(msg providers.Message) {
 	ts.persistedMessages = append(ts.persistedMessages, msg)
 }
 
+func (ts *turnState) persistedMessagesSnapshot() []providers.Message {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return append([]providers.Message(nil), ts.persistedMessages...)
+}
+
 func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
 	history := agent.Sessions.GetHistory(ts.sessionKey)
 	summary := agent.Sessions.GetSummary(ts.sessionKey)
 
-	ts.mu.RLock()
-	persisted := append([]providers.Message(nil), ts.persistedMessages...)
-	ts.mu.RUnlock()
+	persisted := ts.persistedMessagesSnapshot()
 
 	if matched := matchingTurnMessageTail(history, persisted); matched > 0 {
 		history = append([]providers.Message(nil), history[:len(history)-matched]...)
@@ -684,11 +705,81 @@ func (ts *turnState) restoreSession(agent *AgentInstance) error {
 func matchingTurnMessageTail(history, persisted []providers.Message) int {
 	maxMatch := min(len(history), len(persisted))
 	for size := maxMatch; size > 0; size-- {
-		if reflect.DeepEqual(history[len(history)-size:], persisted[len(persisted)-size:]) {
+		if messageSlicesEquivalent(history[len(history)-size:], persisted[len(persisted)-size:]) {
 			return size
 		}
 	}
 	return 0
+}
+
+func splitHistoryForActiveTurn(
+	history []providers.Message,
+	persisted []providers.Message,
+) ([]providers.Message, []providers.Message) {
+	matched := matchingTurnMessageTail(history, persisted)
+	if matched <= 0 {
+		return append([]providers.Message(nil), history...), nil
+	}
+
+	stable := append([]providers.Message(nil), history[:len(history)-matched]...)
+	protected := append([]providers.Message(nil), history[len(history)-matched:]...)
+	return stable, protected
+}
+
+func messageSlicesEquivalent(a, b []providers.Message) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !messagesEquivalent(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func messagesEquivalent(a, b providers.Message) bool {
+	return reflect.DeepEqual(normalizeMessageForComparison(a), normalizeMessageForComparison(b))
+}
+
+func normalizeMessageForComparison(msg providers.Message) providers.Message {
+	msg.PromptLayer = ""
+	msg.PromptSlot = ""
+	msg.PromptSource = ""
+
+	if len(msg.Media) == 0 {
+		msg.Media = nil
+	}
+	if len(msg.Attachments) == 0 {
+		msg.Attachments = nil
+	}
+	if len(msg.SystemParts) == 0 {
+		msg.SystemParts = nil
+	} else {
+		msg.SystemParts = append([]providers.ContentBlock(nil), msg.SystemParts...)
+		for i := range msg.SystemParts {
+			msg.SystemParts[i].PromptLayer = ""
+			msg.SystemParts[i].PromptSlot = ""
+			msg.SystemParts[i].PromptSource = ""
+		}
+	}
+	if len(msg.ToolCalls) == 0 {
+		msg.ToolCalls = nil
+	} else {
+		msg.ToolCalls = append([]providers.ToolCall(nil), msg.ToolCalls...)
+		for i := range msg.ToolCalls {
+			msg.ToolCalls[i].Name = ""
+			msg.ToolCalls[i].Arguments = nil
+			msg.ToolCalls[i].ThoughtSignature = ""
+			if msg.ToolCalls[i].Function != nil {
+				fn := *msg.ToolCalls[i].Function
+				fn.ThoughtSignature = ""
+				msg.ToolCalls[i].Function = &fn
+			}
+		}
+	}
+
+	return msg
 }
 
 func (ts *turnState) interruptHintMessage() providers.Message {

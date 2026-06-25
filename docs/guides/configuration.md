@@ -99,6 +99,50 @@ The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, 
 
 Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want PicoClaw to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
 
+### Request Context Policy
+
+`turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep PicoClaw's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
+
+Each block uses the same `mode` values:
+
+| Mode | Meaning |
+| --- | --- |
+| `default` | Keep PicoClaw's normal behavior for that block. Missing blocks and missing `mode` fields are treated as `default`. |
+| `off` | Disable that block for the turn. |
+| `custom` | Use an allow list. In this version, `custom` is supported only for `skills` and `tools`; using it for `history` or `system_prompt` is a validation error. |
+
+Profile blocks:
+
+| Block | What it controls |
+| --- | --- |
+| `history` | Whether the turn reads prior session history and summary, writes user/assistant/tool messages, ingests context, and runs compaction or summarization. |
+| `system_prompt` | Whether PicoClaw injects its default identity, workspace instructions, memory, runtime context, and summary. External request system prompts are still allowed when this is `off`. |
+| `skills` | Whether the skill catalog and active skill prompt content are loaded. `custom.allow` keeps only the listed skill names in prompt context. |
+| `tools` | Which callable tools are exposed to the model and allowed at execution time. `custom.allow` keeps only listed registered tool names. |
+
+When `system_prompt.mode` is `off`, tools are still visible, and no external system prompt is supplied, PicoClaw uses its existing tool-use rule as the minimal fallback prompt. If `tools.mode` is `off`, no fallback prompt is added.
+
+Example clean web policy:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "turn_profile": {
+        "enabled": true,
+        "history": { "mode": "off" },
+        "system_prompt": { "mode": "off" },
+        "skills": { "mode": "off" },
+        "tools": {
+          "mode": "custom",
+          "allow": ["web_search", "web_fetch"]
+        }
+      }
+    }
+  }
+}
+```
+
 ### Web launcher dashboard
 
 **picoclaw-launcher** serves a browser UI that requires password sign-in first. On first run, open `/launcher-setup` to create the dashboard password. Later manual sign-ins use `/launcher-login`.
@@ -356,6 +400,7 @@ Even with `restrict_to_workspace: false`, the `exec` tool blocks these dangerous
 |------------|------|---------|-------------|
 | `tools.allow_read_paths` | string[] | `[]` | Additional paths allowed for reading outside workspace |
 | `tools.allow_write_paths` | string[] | `[]` | Additional paths allowed for writing outside workspace |
+| `tools.message.media_enabled` | bool | `false` | Allows the `message` tool to attach local media files by path. This is separate from `tools.send_file.enabled`; enable it only when unified text/media/caption delivery is intended. |
 
 ### Read File Mode
 
@@ -410,7 +455,7 @@ Use `mode = lines` when:
   "tools": {
     "read_file": {
       "enabled": true,
-       "mode": "lines",
+      "mode": "lines",
       "max_read_file_size": 65536
     }
   }
@@ -793,6 +838,9 @@ Legacy Telegram environment variables remain compatible: `PICOCLAW_CHANNELS_TELE
 
 Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
 
+For model-specific TTS request fields such as custom speech `voice` names or
+`response_format: "mp3"`, use `model_list[].extra_body`.
+
 #### Vendor-Specific Examples
 
 > **Tip**: You can omit `api_key` fields and store them in `.security.yml` for better security. See [Security Configuration](#-security-configuration-recommended).
@@ -806,6 +854,35 @@ Failure behavior is intentionally conservative: if streaming fails before any vi
   "provider": "openai",
   "model": "gpt-5.4"
   // api_key: set in .security.yml
+}
+```
+
+</details>
+
+<details>
+<summary><b>OpenRouter TTS (MAI Voice 2)</b></summary>
+
+```json
+{
+  "model_name": "mai-voice-2",
+  "provider": "openrouter",
+  "model": "microsoft/mai-voice-2",
+  "api_base": "https://openrouter.ai/api/v1",
+  "extra_body": {
+    "voice": "en-US-Harper:MAI-Voice-2",
+    "response_format": "mp3"
+  }
+  // api_key: set in .security.yml
+}
+```
+
+Pair this with:
+
+```json
+{
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  }
 }
 ```
 
@@ -1077,13 +1154,17 @@ PicoClaw supports cron-style scheduled tasks via the `cron` tool. The agent can 
   "tools": {
     "cron": {
       "enabled": true,
-      "exec_timeout_minutes": 5
+      "exec_timeout_minutes": 5,
+      "allow_command": true,
+      "command_allowed_remotes": []
     }
   }
 }
 ```
 
 Scheduled tasks persist across restarts and are stored in `~/.picoclaw/workspace/cron/`.
+
+Command cron jobs can execute shell commands. By default, remote channels cannot schedule command jobs. To allow specific remote channels, set `command_allowed_remotes` to entries such as `"telegram"` or `"telegram:1234567890"`; use `"*"` only if every non-empty channel should be allowed. The `"*"` wildcard is potentially dangerous because any remote channel that can talk to PicoClaw can schedule shell commands. This does not bypass `allow_command`, `command_confirm`, or exec safety checks.
 
 ### Advanced Topics
 

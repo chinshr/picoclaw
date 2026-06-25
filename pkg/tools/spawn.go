@@ -90,8 +90,14 @@ func (t *SpawnTool) execute(
 		return ErrorResult("task is required and must be a non-empty string")
 	}
 
-	label, _ := args["label"].(string)
-	agentID, _ := args["agent_id"].(string)
+	label, ok := args["label"].(string)
+	if !ok {
+		label = ""
+	}
+	agentID, ok := args["agent_id"].(string)
+	if !ok {
+		agentID = ""
+	}
 	targetAgentID := strings.TrimSpace(agentID)
 
 	// Check allowlist if targeting a specific agent

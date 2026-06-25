@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
+
+var resolvedImagePathTagRegex = regexp.MustCompile(`\[image:[^\s\]][^\]]*\]`)
 
 func messagesContainMedia(messages []providers.Message) bool {
 	for _, msg := range messages {
@@ -64,4 +69,126 @@ func isVisionUnsupportedError(err error) bool {
 	}
 
 	return false
+}
+
+func visionUnsupportedModelError(modelName string, imageModelConfigured bool) error {
+	modelName = strings.TrimSpace(modelName)
+	if imageModelConfigured {
+		if modelName != "" {
+			return fmt.Errorf(
+				"selected vision model %q does not support image input; update agents.defaults.image_model to a multimodal model",
+				modelName,
+			)
+		}
+		return fmt.Errorf(
+			"selected vision model does not support image input; update agents.defaults.image_model to a multimodal model",
+		)
+	}
+	if modelName != "" {
+		return fmt.Errorf(
+			"active model %q does not support image input; configure agents.defaults.image_model with a multimodal model",
+			modelName,
+		)
+	}
+	return fmt.Errorf(
+		"the active model does not support image input; configure agents.defaults.image_model with a multimodal model",
+	)
+}
+
+func sameCandidateSet(a, b []providers.FallbackCandidate) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].StableKey() != b[i].StableKey() {
+			return false
+		}
+	}
+	return true
+}
+
+func messagesContainCurrentTurnMediaTurn(messages []providers.Message) bool {
+	for _, msg := range messages {
+		if len(msg.Media) > 0 {
+			return true
+		}
+		if resolvedImagePathTagRegex.MatchString(msg.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Pipeline) routeMediaTurn(ts *turnState, exec *turnExecution) error {
+	if p == nil || ts == nil || ts.agent == nil || exec == nil ||
+		!messagesContainCurrentTurnMediaTurn(currentTurnMessages(exec.callMessages, exec.currentTurnStart)) {
+		return nil
+	}
+
+	var targetCandidates []providers.FallbackCandidate
+	var targetModelName string
+	var routeReason string
+
+	switch {
+	case len(ts.agent.ImageCandidates) > 0:
+		targetCandidates = append([]providers.FallbackCandidate(nil), ts.agent.ImageCandidates...)
+		targetModelName = strings.TrimSpace(p.Cfg.Agents.Defaults.ImageModel)
+		routeReason = "configured_image_model"
+	case exec.usedLight && len(ts.agent.Candidates) > 0:
+		targetCandidates = append([]providers.FallbackCandidate(nil), ts.agent.Candidates...)
+		targetModelName = strings.TrimSpace(ts.agent.Model)
+		routeReason = "bypass_light_model_for_media"
+	default:
+		return nil
+	}
+
+	if len(targetCandidates) == 0 {
+		return nil
+	}
+
+	targetModel := resolvedCandidateModel(targetCandidates, targetModelName)
+	targetProvider := exec.activeProvider
+	firstCandidate := targetCandidates[0]
+	if provider, err := providerForFallbackCandidate(
+		ts.agent,
+		ts.agent.Provider,
+		targetCandidates,
+		firstCandidate.Provider,
+		firstCandidate.Model,
+	); err != nil {
+		return err
+	} else if provider != nil {
+		targetProvider = provider
+	}
+
+	resolvedModelName := resolvedCandidateModelName(targetCandidates, targetModelName)
+	if sameCandidateSet(exec.activeCandidates, targetCandidates) &&
+		exec.activeModel == targetModel &&
+		exec.llmModelName == resolvedModelName {
+		return nil
+	}
+
+	exec.activeCandidates = targetCandidates
+	exec.activeModel = targetModel
+	exec.activeProvider = targetProvider
+	exec.activeModelConfig = resolveActiveModelConfig(
+		p.Cfg,
+		ts.agent.Workspace,
+		targetCandidates,
+		targetModel,
+		p.Cfg.Agents.Defaults.Provider,
+	)
+	exec.llmModelName = resolvedModelName
+	exec.usedLight = false
+
+	logger.InfoCF("agent", "Media turn routing selected model", map[string]any{
+		"agent_id":       ts.agent.ID,
+		"reason":         routeReason,
+		"model":          exec.activeModel,
+		"model_name":     exec.llmModelName,
+		"candidates":     len(exec.activeCandidates),
+		"messages_count": len(exec.callMessages),
+	})
+
+	return nil
 }

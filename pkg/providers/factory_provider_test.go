@@ -171,6 +171,30 @@ func TestCreateProviderFromConfig_UsesExplicitProvider(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromConfig_DeepSeekSupportsThinking(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "deepseek-v4-flash",
+		Provider:  "deepseek",
+		Model:     "deepseek-v4-flash",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if modelID != "deepseek-v4-flash" {
+		t.Fatalf("modelID = %q, want %q", modelID, "deepseek-v4-flash")
+	}
+	tc, ok := provider.(ThinkingCapable)
+	if !ok {
+		t.Fatalf("provider %T should implement ThinkingCapable for DeepSeek", provider)
+	}
+	if !tc.SupportsThinking() {
+		t.Fatalf("DeepSeek provider SupportsThinking() = false, want true")
+	}
+}
+
 func TestCreateProviderFromConfig_PreservesExplicitProviderPrefixedModel(t *testing.T) {
 	cfg := &config.ModelConfig{
 		ModelName: "test-openai",
@@ -199,6 +223,7 @@ func TestCreateProviderFromConfig_DefaultAPIBase(t *testing.T) {
 	}{
 		{"openai", "openai"},
 		{"venice", "venice"},
+		{"nearai", "nearai"},
 		{"groq", "groq"},
 		{"novita", "novita"},
 		{"openrouter", "openrouter"},
@@ -210,6 +235,7 @@ func TestCreateProviderFromConfig_DefaultAPIBase(t *testing.T) {
 		{"deepseek", "deepseek"},
 		{"ollama", "ollama"},
 		{"lmstudio", "lmstudio"},
+		{"gpt4free", "gpt4free"},
 		{"longcat", "longcat"},
 		{"modelscope", "modelscope"},
 		{"mimo", "mimo"},
@@ -248,9 +274,27 @@ func TestGetDefaultAPIBase_LMStudio(t *testing.T) {
 	}
 }
 
+func TestGetDefaultAPIBase_GPT4Free(t *testing.T) {
+	if got := getDefaultAPIBase("gpt4free"); got != "http://localhost:1337/v1" {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "gpt4free", got, "http://localhost:1337/v1")
+	}
+	if got := getDefaultAPIBase("g4f"); got != "http://localhost:1337/v1" {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "g4f", got, "http://localhost:1337/v1")
+	}
+}
+
 func TestGetDefaultAPIBase_Venice(t *testing.T) {
 	if got := getDefaultAPIBase("venice"); got != "https://api.venice.ai/api/v1" {
 		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "venice", got, "https://api.venice.ai/api/v1")
+	}
+}
+
+func TestGetDefaultAPIBase_NearAI(t *testing.T) {
+	if got := getDefaultAPIBase("nearai"); got != "https://cloud-api.near.ai/v1" {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "nearai", got, "https://cloud-api.near.ai/v1")
+	}
+	if got := getDefaultAPIBase("near-ai"); got != "https://cloud-api.near.ai/v1" {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "near-ai", got, "https://cloud-api.near.ai/v1")
 	}
 }
 
@@ -329,6 +373,13 @@ func TestCreateProviderFromConfig_LocalProviders(t *testing.T) {
 			model:       "vllm/Qwen/Qwen3-8B",
 			apiKey:      "",
 			wantModelID: "Qwen/Qwen3-8B",
+		},
+		{
+			name:        "GPT4Free without API key",
+			modelName:   "test-gpt4free",
+			model:       "gpt4free/gpt-4o-mini",
+			apiKey:      "",
+			wantModelID: "gpt-4o-mini",
 		},
 	}
 
@@ -478,6 +529,28 @@ func TestCreateProviderFromConfig_Venice(t *testing.T) {
 	}
 	if modelID != "venice-uncensored" {
 		t.Errorf("modelID = %q, want %q", modelID, "venice-uncensored")
+	}
+	if _, ok := provider.(*HTTPProvider); !ok {
+		t.Fatalf("expected *HTTPProvider, got %T", provider)
+	}
+}
+
+func TestCreateProviderFromConfig_NearAI(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "test-nearai",
+		Model:     "nearai/zai-org/GLM-5.1-FP8",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if provider == nil {
+		t.Fatal("CreateProviderFromConfig() returned nil provider")
+	}
+	if modelID != "zai-org/GLM-5.1-FP8" {
+		t.Errorf("modelID = %q, want %q", modelID, "zai-org/GLM-5.1-FP8")
 	}
 	if _, ok := provider.(*HTTPProvider); !ok {
 		t.Fatalf("expected *HTTPProvider, got %T", provider)
@@ -829,8 +902,11 @@ func TestCreateProviderFromConfig_AzureMissingAPIKey(t *testing.T) {
 	}
 
 	_, _, err := CreateProviderFromConfig(cfg)
-	if err == nil {
-		t.Fatal("CreateProviderFromConfig() expected error for missing API key")
+	// Without api_key the factory falls back to identity auth, which in the
+	// default build is stubbed out and surfaces a build-tag error. With the
+	// azidentity tag, the call succeeds and is covered by a separate test.
+	if err != nil && !strings.Contains(err.Error(), "azidentity") {
+		t.Fatalf("CreateProviderFromConfig() unexpected error = %v", err)
 	}
 }
 
@@ -946,7 +1022,7 @@ func TestCreateProviderFromConfig_CodingPlanAnthropic(t *testing.T) {
 			if modelID != wantModelID {
 				t.Errorf("modelID = %q, want %q", modelID, wantModelID)
 			}
-			// coding-plan-anthropic uses Anthropic Messages provider
+			// alibaba-coding-anthropic uses Anthropic Messages provider
 			// Verify it's the anthropic messages provider by checking interface
 			var _ LLMProvider = provider
 		})
@@ -998,10 +1074,30 @@ func TestModelProviderOptions(t *testing.T) {
 	if option, ok := seen["openai"]; ok && !option.CreateAllowed {
 		t.Fatal("openai should be creatable")
 	}
+	if option, ok := seen["openai"]; ok && !option.SupportsFetch {
+		t.Fatal("openai should support upstream model listing")
+	} else if option.DisplayName != "OpenAI" {
+		t.Fatalf("openai display_name = %q, want %q", option.DisplayName, "OpenAI")
+	} else if len(option.CommonModels) == 0 {
+		t.Fatal("openai common_models should not be empty")
+	}
 	if option, ok := seen["lmstudio"]; !ok {
 		t.Fatal("lmstudio option missing")
 	} else if !option.EmptyAPIKeyAllowed {
 		t.Fatal("lmstudio should allow empty API keys")
+	}
+	if option, ok := seen["gpt4free"]; !ok {
+		t.Fatal("gpt4free option missing")
+	} else {
+		if option.DefaultAPIBase != "http://localhost:1337/v1" {
+			t.Fatalf("gpt4free default_api_base = %q, want %q", option.DefaultAPIBase, "http://localhost:1337/v1")
+		}
+		if !option.EmptyAPIKeyAllowed {
+			t.Fatal("gpt4free should allow empty API keys")
+		}
+		if !option.SupportsFetch {
+			t.Fatal("gpt4free should support upstream model listing")
+		}
 	}
 	if option, ok := seen["siliconflow"]; !ok {
 		t.Fatal("siliconflow option missing")
@@ -1012,10 +1108,41 @@ func TestModelProviderOptions(t *testing.T) {
 			"https://api.siliconflow.cn/v1",
 		)
 	}
+	if option, ok := seen["nearai"]; !ok {
+		t.Fatal("nearai option missing")
+	} else {
+		if option.DisplayName != "NEAR AI Cloud" {
+			t.Fatalf("nearai display_name = %q, want %q", option.DisplayName, "NEAR AI Cloud")
+		}
+		if option.DefaultAPIBase != "https://cloud-api.near.ai/v1" {
+			t.Fatalf("nearai default_api_base = %q, want %q", option.DefaultAPIBase, "https://cloud-api.near.ai/v1")
+		}
+		if !option.SupportsFetch {
+			t.Fatal("nearai should support upstream model listing")
+		}
+		if len(option.CommonModels) == 0 {
+			t.Fatal("nearai common_models should not be empty")
+		}
+	}
 	if option, ok := seen["anthropic"]; !ok {
 		t.Fatal("anthropic option missing")
 	} else if option.DefaultAPIBase != "https://api.anthropic.com/v1" {
 		t.Fatalf("anthropic default_api_base = %q, want %q", option.DefaultAPIBase, "https://api.anthropic.com/v1")
+	}
+	// First-party Claude API model IDs use hyphenated formats such as
+	// claude-{name}-{major}-{minor} or claude-{name}-{major}-{minor}-{YYYYMMDD};
+	// dotted provider prefixes are for platform-specific IDs such as Bedrock.
+	// https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+	for _, provider := range []string{"anthropic", "anthropic-messages"} {
+		option, ok := seen[provider]
+		if !ok {
+			t.Fatalf("%s option missing", provider)
+		}
+		for _, model := range option.CommonModels {
+			if strings.Contains(model, ".") {
+				t.Fatalf("%s common_model %q uses dotted ID", provider, model)
+			}
+		}
 	}
 	if _, ok := seen["azure"]; !ok {
 		t.Fatal("azure option missing")
@@ -1052,6 +1179,71 @@ func TestModelProviderOptions(t *testing.T) {
 		t.Fatal("github-copilot option missing")
 	} else if option.DefaultAPIBase != "localhost:4321" {
 		t.Fatalf("github-copilot default_api_base = %q, want %q", option.DefaultAPIBase, "localhost:4321")
+	} else if !option.Local {
+		t.Fatal("github-copilot should be marked local")
+	}
+	if option, ok := seen["qwen-portal"]; !ok {
+		t.Fatal("qwen-portal option missing")
+	} else if len(option.Aliases) == 0 || option.Aliases[0] != "qwen" {
+		t.Fatalf("qwen-portal aliases = %#v, want to include qwen", option.Aliases)
+	}
+
+	for _, option := range options {
+		if len(option.CommonModels) > 6 {
+			t.Fatalf("provider %q exposes %d common_models, want at most 6", option.ID, len(option.CommonModels))
+		}
+		if option.Local && len(option.CommonModels) > 0 {
+			t.Fatalf("local provider %q should not expose common_models", option.ID)
+		}
+		seenModels := make(map[string]struct{}, len(option.CommonModels))
+		for _, model := range option.CommonModels {
+			if strings.TrimSpace(model) == "" {
+				t.Fatalf("provider %q includes an empty common_model entry", option.ID)
+			}
+			if _, exists := seenModels[model]; exists {
+				t.Fatalf("provider %q includes duplicate common_model %q", option.ID, model)
+			}
+			seenModels[model] = struct{}{}
+		}
+	}
+}
+
+func TestBuildModelProviderAliasMap(t *testing.T) {
+	aliases := buildModelProviderAliasMap()
+	if len(aliases) == 0 {
+		t.Fatal("buildModelProviderAliasMap() returned empty map")
+	}
+
+	seenAliases := make(map[string]string, len(aliases))
+	for provider, option := range modelProviderOptionsByName {
+		got, ok := aliases[provider]
+		if !ok {
+			t.Fatalf("canonical provider %q missing from alias map", provider)
+		}
+		if got != provider {
+			t.Fatalf("canonical provider %q mapped to %q", provider, got)
+		}
+		if existing, ok := seenAliases[provider]; ok {
+			t.Fatalf("canonical provider key %q collides with provider %q", provider, existing)
+		}
+		seenAliases[provider] = provider
+		for _, alias := range option.Aliases {
+			normalized := strings.ToLower(strings.TrimSpace(alias))
+			if normalized == "" {
+				t.Fatalf("provider %q includes empty alias", provider)
+			}
+			if existing, ok := seenAliases[normalized]; ok && existing != provider {
+				t.Fatalf("alias %q for provider %q collides with provider %q", alias, provider, existing)
+			}
+			seenAliases[normalized] = provider
+			got, ok := aliases[normalized]
+			if !ok {
+				t.Fatalf("alias %q for provider %q missing from alias map", alias, provider)
+			}
+			if got != provider {
+				t.Fatalf("alias %q normalized to %q, want %q", alias, got, provider)
+			}
+		}
 	}
 }
 

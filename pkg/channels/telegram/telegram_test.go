@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -110,6 +112,17 @@ func successResponseWithMessageID(t *testing.T, messageID int) *ta.Response {
 	return &ta.Response{Ok: true, Result: b}
 }
 
+func successMediaGroupResponse(t *testing.T, messageIDs ...int) *ta.Response {
+	t.Helper()
+	messages := make([]telego.Message, 0, len(messageIDs))
+	for _, messageID := range messageIDs {
+		messages = append(messages, telego.Message{MessageID: messageID})
+	}
+	b, err := json.Marshal(messages)
+	require.NoError(t, err)
+	return &ta.Response{Ok: true, Result: b}
+}
+
 func successUserResponse(t *testing.T, user *telego.User) *ta.Response {
 	t.Helper()
 	b, err := json.Marshal(user)
@@ -202,6 +215,33 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	assert.Equal(t, "caption", constructor.calls[1].Parameters["caption"])
 }
 
+func TestDownloadFileWithInfo_AllowsLocalConfiguredBaseURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/file/bot"+testToken+"/photos/image"; got != want {
+			t.Fatalf("request path = %q, want %q", got, want)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("telegram-local-bot-api"))
+	}))
+	defer server.Close()
+
+	ch, err := NewTelegramChannel(
+		&config.Channel{Type: config.ChannelTelegram, Enabled: true},
+		&config.TelegramSettings{
+			Token:   *config.NewSecureString(testToken),
+			BaseURL: server.URL,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	path := ch.downloadFileWithInfo(&telego.File{FilePath: "photos/image"}, "")
+	if path == "" {
+		t.Fatal("expected local base_url download to succeed")
+	}
+	defer os.Remove(path)
+}
+
 func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	caller := &stubCaller{
@@ -235,6 +275,276 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	assert.Contains(t, caller.calls[0].URL, "sendPhoto")
 	require.Len(t, constructor.calls, 1)
 	assert.NotContains(t, caller.calls[0].URL, "sendDocument")
+}
+
+func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendMediaGroup") {
+				return successMediaGroupResponse(t, 101, 102), nil
+			}
+			t.Fatalf("unexpected API call: %s", url)
+			return nil, nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.png")
+	secondPath := filepath.Join(tmpDir, "second.png")
+	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
+	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
+
+	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+	secondRef, err := store.Store(
+		secondPath,
+		media.MediaMeta{Filename: "second.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{
+			{Type: "image", Ref: firstRef, Caption: "album caption"},
+			{Type: "image", Ref: secondRef},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"101", "102"}, ids)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendMediaGroup")
+	require.Len(t, constructor.calls, 1)
+	require.Len(t, constructor.calls[0].FileSizes, 2)
+
+	var mediaPayload []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &mediaPayload))
+	require.Len(t, mediaPayload, 2)
+	assert.Equal(t, "album caption", mediaPayload[0]["caption"])
+	_, hasSecondCaption := mediaPayload[1]["caption"]
+	assert.False(t, hasSecondCaption)
+}
+
+func TestSendMedia_MoreThanTenImagesSplitIntoMediaGroups(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	callIndex := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if !strings.Contains(url, "sendMediaGroup") {
+				t.Fatalf("unexpected API call: %s", url)
+			}
+			callIndex++
+			if callIndex == 1 {
+				return successMediaGroupResponse(t, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010), nil
+			}
+			if callIndex == 2 {
+				return successMediaGroupResponse(t, 1011, 1012, 1013, 1014, 1015), nil
+			}
+			t.Fatalf("unexpected sendMediaGroup call #%d", callIndex)
+			return nil, nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	parts := make([]bus.MediaPart, 0, 15)
+	for i := 0; i < 15; i++ {
+		path := filepath.Join(tmpDir, "image-"+strconv.Itoa(i)+".png")
+		require.NoError(t, os.WriteFile(path, []byte("img-"+strconv.Itoa(i)), 0o644))
+		ref, err := store.Store(
+			path,
+			media.MediaMeta{Filename: filepath.Base(path), ContentType: "image/png"},
+			"scope-1",
+		)
+		require.NoError(t, err)
+		part := bus.MediaPart{Type: "image", Ref: ref}
+		if i == 0 {
+			part.Caption = "long album caption"
+		}
+		parts = append(parts, part)
+	}
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts:  parts,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"1001", "1002", "1003", "1004", "1005",
+		"1006", "1007", "1008", "1009", "1010",
+		"1011", "1012", "1013", "1014", "1015",
+	}, ids)
+	require.Len(t, caller.calls, 2)
+	require.Len(t, constructor.calls, 2)
+}
+
+func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	longCaption := strings.Repeat("a", telegramCaptionLimit) + " tail overflow"
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendMessage"):
+				return successResponseWithMessageID(t, 201), nil
+			case strings.Contains(url, "sendPhoto"):
+				return successResponseWithMessageID(t, 202), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(path, []byte("img"), 0o644))
+	ref, err := store.Store(path, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: longCaption,
+		}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"201", "202"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendPhoto")
+	assert.Equal(t, "", constructor.calls[0].Parameters["caption"])
+}
+
+func TestSendMedia_MediaGroupLongCaptionSendsTextFirst(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	longCaption := strings.Repeat("b", telegramCaptionLimit) + " trailing explanation"
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendMessage"):
+				return successResponseWithMessageID(t, 301), nil
+			case strings.Contains(url, "sendMediaGroup"):
+				return successMediaGroupResponse(t, 302, 303), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.png")
+	secondPath := filepath.Join(tmpDir, "second.png")
+	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
+	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
+
+	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+	secondRef, err := store.Store(
+		secondPath,
+		media.MediaMeta{Filename: "second.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{
+			{Type: "image", Ref: firstRef, Caption: longCaption},
+			{Type: "image", Ref: secondRef},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"301", "302", "303"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendMediaGroup")
+}
+
+func TestSendMedia_MultiGroupLongCaptionSendsTextBeforeGroups(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	longCaption := strings.Repeat("c", telegramCaptionLimit) + " overflow before second album"
+	callOrder := make([]string, 0, 3)
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendMessage"):
+				callOrder = append(callOrder, "text")
+				return successResponseWithMessageID(t, 499), nil
+			case strings.Contains(url, "sendMediaGroup"):
+				callOrder = append(callOrder, "group")
+				if len(callOrder) == 2 {
+					return successMediaGroupResponse(t, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410), nil
+				}
+				if len(callOrder) == 3 {
+					return successMediaGroupResponse(t, 411, 412, 413, 414, 415), nil
+				}
+				t.Fatalf("unexpected sendMediaGroup order: %v", callOrder)
+				return nil, nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	parts := make([]bus.MediaPart, 0, 15)
+	for i := 0; i < 15; i++ {
+		path := filepath.Join(tmpDir, "image-"+strconv.Itoa(i)+".png")
+		require.NoError(t, os.WriteFile(path, []byte("img-"+strconv.Itoa(i)), 0o644))
+		ref, err := store.Store(
+			path,
+			media.MediaMeta{Filename: filepath.Base(path), ContentType: "image/png"},
+			"scope-1",
+		)
+		require.NoError(t, err)
+		part := bus.MediaPart{Type: "image", Ref: ref}
+		if i == 0 {
+			part.Caption = longCaption
+		}
+		parts = append(parts, part)
+	}
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts:  parts,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"499",
+		"401", "402", "403", "404", "405",
+		"406", "407", "408", "409", "410",
+		"411", "412", "413", "414", "415",
+	}, ids)
+	assert.Equal(t, []string{"text", "group", "group"}, callOrder)
 }
 
 func TestSend_EmptyContent(t *testing.T) {
@@ -931,8 +1241,9 @@ func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	inbound, ok := <-messageBus.InboundChan()
 	require.True(t, ok, "expected inbound message")
 
-	// ChatID remains the parent chat; TopicID isolates the sub-conversation.
-	assert.Equal(t, "-1001234567890", inbound.ChatID)
+	// ChatID includes the thread ID for forum topics so outbound
+	// delivery resolves the correct topic without relying solely on TopicID fallback.
+	assert.Equal(t, "-1001234567890/42", inbound.ChatID)
 	assert.Equal(t, "group", inbound.Context.ChatType)
 	assert.Equal(t, "42", inbound.Context.TopicID)
 }
@@ -1213,6 +1524,42 @@ func TestHandleMessage_EmptyContent_Ignored(t *testing.T) {
 	case <-messageBus.InboundChan():
 		t.Fatal("Empty message should not be published to message bus")
 	default:
+	}
+}
+
+func TestHandleMessage_LocationForwardedAsText(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		MessageID: 3049,
+		Location: &telego.Location{
+			Latitude:  35.197713,
+			Longitude: 136.885705,
+		},
+		Chat: telego.Chat{
+			ID:   456,
+			Type: "private",
+		},
+		From: &telego.User{
+			ID:        789,
+			FirstName: "User",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		assert.Equal(t, "[User location: lat=35.197713, lng=136.885705]", inbound.Content)
+		assert.Equal(t, "3049", inbound.Context.MessageID)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for location message")
 	}
 }
 

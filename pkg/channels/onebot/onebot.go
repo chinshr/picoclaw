@@ -24,6 +24,7 @@ import (
 type OneBotChannel struct {
 	*channels.BaseChannel
 	config        *config.OneBotSettings
+	downloadFn    func(urlStr, filename string) string
 	conn          *websocket.Conn
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -795,9 +796,7 @@ func (c *OneBotChannel) parseMessageSegments(
 					} else if n, ok := data["name"].(string); ok && n != "" {
 						filename = n
 					}
-					localPath := utils.DownloadFile(url, filename, utils.DownloadOptions{
-						LoggerPrefix: "onebot",
-					})
+					localPath := c.downloadInboundFile(url, filename)
 					if localPath != "" {
 						mediaRefs = append(mediaRefs, storeFile(localPath, filename))
 						textParts = append(textParts, fmt.Sprintf("[%s]", segType))
@@ -809,9 +808,7 @@ func (c *OneBotChannel) parseMessageSegments(
 			if data != nil {
 				url, _ := data["url"].(string)
 				if url != "" {
-					localPath := utils.DownloadFile(url, "voice.amr", utils.DownloadOptions{
-						LoggerPrefix: "onebot",
-					})
+					localPath := c.downloadInboundFile(url, "voice.amr")
 					if localPath != "" {
 						textParts = append(textParts, "[voice]")
 						mediaRefs = append(mediaRefs, storeFile(localPath, "voice.amr"))
@@ -845,6 +842,16 @@ func (c *OneBotChannel) parseMessageSegments(
 		Media:          mediaRefs,
 		ReplyTo:        replyTo,
 	}
+}
+
+func (c *OneBotChannel) downloadInboundFile(urlStr, filename string) string {
+	if c.downloadFn != nil {
+		return c.downloadFn(urlStr, filename)
+	}
+	return utils.DownloadFile(urlStr, filename, utils.DownloadOptions{
+		LoggerPrefix:        "onebot",
+		BlockPrivateTargets: true,
+	})
 }
 
 func (c *OneBotChannel) handleRawEvent(raw *oneBotRawEvent) {
@@ -995,7 +1002,6 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 
 	senderID := strconv.FormatInt(userID, 10)
 	var chatID string
-	var contextChatID string
 	var contextChatType string
 
 	metadata := map[string]string{}
@@ -1007,13 +1013,11 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 	switch raw.MessageType {
 	case "private":
 		chatID = "private:" + senderID
-		contextChatID = senderID
 		contextChatType = "direct"
 
 	case "group":
 		groupIDStr := strconv.FormatInt(groupID, 10)
 		chatID = "group:" + groupIDStr
-		contextChatID = groupIDStr
 		contextChatType = "group"
 		metadata["group_id"] = groupIDStr
 
@@ -1080,7 +1084,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 
 	inboundCtx := bus.InboundContext{
 		Channel:          c.Name(),
-		ChatID:           contextChatID,
+		ChatID:           chatID,
 		ChatType:         contextChatType,
 		SenderID:         senderID,
 		MessageID:        messageID,

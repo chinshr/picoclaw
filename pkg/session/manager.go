@@ -60,6 +60,21 @@ func (sm *SessionManager) GetOrCreate(key string) *Session {
 	return session
 }
 
+func ensureMessageCreatedAt(msg *providers.Message, fallback time.Time) {
+	if msg.CreatedAt != nil && !msg.CreatedAt.IsZero() {
+		return
+	}
+	ts := fallback
+	msg.CreatedAt = &ts
+}
+
+func normalizeHistoryCreatedAt(history []providers.Message) {
+	now := time.Now()
+	for i := range history {
+		ensureMessageCreatedAt(&history[i], now)
+	}
+}
+
 func (sm *SessionManager) AddMessage(sessionKey, role, content string) {
 	sm.AddFullMessage(sessionKey, providers.Message{
 		Role:    role,
@@ -87,8 +102,11 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 		sm.sessions[sessionKey] = session
 	}
 
+	now := time.Now()
+	ensureMessageCreatedAt(&msg, now)
+
 	session.Messages = append(session.Messages, msg)
-	session.Updated = time.Now()
+	session.Updated = now
 }
 
 func (sm *SessionManager) GetHistory(key string) []providers.Message {
@@ -275,6 +293,7 @@ func (sm *SessionManager) loadSessions() error {
 			continue
 		}
 		session.Messages = messageutil.FilterInvalidHistoryMessages(session.Messages)
+		normalizeHistoryCreatedAt(session.Messages)
 
 		sm.sessions[session.Key] = &session
 	}
@@ -300,6 +319,7 @@ func (sm *SessionManager) SetHistory(key string, history []providers.Message) {
 		// from the caller's slice.
 		msgs := make([]providers.Message, len(history))
 		copy(msgs, history)
+		normalizeHistoryCreatedAt(msgs)
 		session.Messages = msgs
 		session.Updated = time.Now()
 	}

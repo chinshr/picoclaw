@@ -44,6 +44,7 @@ export interface ChatMessage {
   content: string
   timestamp: number | string
   kind?: AssistantMessageKind
+  modelName?: string
   attachments?: ChatAttachment[]
   toolCalls?: ChatToolCall[]
 }
@@ -51,7 +52,9 @@ export interface ChatMessage {
 export interface ContextUsage {
   used_tokens: number
   total_tokens: number
+  history_tokens?: number
   compress_at_tokens: number
+  summarize_at_tokens?: number
   used_percent: number
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -96,15 +97,46 @@ func markFinalOutbound(msg *bus.OutboundMessage) {
 	msg.Context.Raw[metadataKeyOutboundKind] = outboundKindFinal
 }
 
-func outboundMessageForTurnWithKind(ts *turnState, content, kind string) bus.OutboundMessage {
+type outboundTurnMessageOptions struct {
+	kind      string
+	modelName string
+	raw       map[string]string
+}
+
+func outboundMessageForTurnWithOptions(
+	ts *turnState,
+	content string,
+	opts outboundTurnMessageOptions,
+) bus.OutboundMessage {
 	msg := outboundMessageForTurn(ts, content)
-	if strings.TrimSpace(kind) == "" {
+	trimmedKind := strings.TrimSpace(opts.kind)
+	trimmedModelName := strings.TrimSpace(opts.modelName)
+	rawCount := len(opts.raw)
+	if trimmedKind != "" {
+		rawCount++
+	}
+	if trimmedModelName != "" {
+		rawCount++
+	}
+	if rawCount == 0 {
 		return msg
 	}
+
 	if msg.Context.Raw == nil {
-		msg.Context.Raw = make(map[string]string, 1)
+		msg.Context.Raw = make(map[string]string, rawCount)
 	}
-	msg.Context.Raw[metadataKeyMessageKind] = kind
+	if trimmedKind != "" {
+		msg.Context.Raw[metadataKeyMessageKind] = trimmedKind
+	}
+	if trimmedModelName != "" {
+		msg.Context.Raw["model_name"] = trimmedModelName
+	}
+	for key, value := range opts.raw {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		msg.Context.Raw[key] = value
+	}
 	return msg
 }
 
@@ -450,6 +482,9 @@ func activeSkillNames(agent *AgentInstance, opts processOptions) []string {
 	if agent == nil {
 		return nil
 	}
+	if turnProfileSkillsOff(opts.TurnProfile) {
+		return nil
+	}
 
 	combined := make([]string, 0, len(agent.SkillsFilter)+len(opts.ForcedSkills))
 	combined = append(combined, agent.SkillsFilter...)
@@ -478,6 +513,9 @@ func activeSkillNames(agent *AgentInstance, opts processOptions) []string {
 		resolved = append(resolved, name)
 	}
 
+	if turnProfileCustomSkills(opts.TurnProfile) {
+		return filterNamesByTurnProfile(resolved, opts.TurnProfile.AllowedSkills)
+	}
 	return resolved
 }
 
@@ -521,13 +559,15 @@ func hasMediaRefs(messages []providers.Message) bool {
 
 func sideQuestionModelName(agent *AgentInstance, usedLight bool) string {
 	if usedLight && len(agent.LightCandidates) > 0 {
-		// Use the first light candidate's model
-		return agent.LightCandidates[0].Model
+		if name := resolvedCandidateModelName(agent.LightCandidates, ""); name != "" {
+			return name
+		}
 	}
 	return agent.Model
 }
 
 func modelNameFromIdentityKey(identityKey string) string {
+	identityKey = strings.TrimSpace(identityKey)
 	if identityKey == "" {
 		return ""
 	}
@@ -538,10 +578,89 @@ func modelNameFromIdentityKey(identityKey string) string {
 	return identityKey
 }
 
+func modelAliasFromCandidateIdentityKey(identityKey string) string {
+	const prefix = "model_name:"
+	if !strings.HasPrefix(identityKey, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(identityKey, prefix))
+}
+
 func closeProviderIfStateful(provider providers.LLMProvider) {
 	if stateful, ok := provider.(providers.StatefulProvider); ok {
 		stateful.Close()
 	}
+}
+
+// activeRequestsInc atomically increments the active request count.
+func (al *AgentLoop) activeRequestsInc() {
+	al.activeReqMu.Lock()
+	al.activeReqCount++
+	al.activeReqMu.Unlock()
+}
+
+// activeRequestsDec atomically decrements the active request count
+// and wakes any goroutine blocked in waitForActiveRequests when the
+// count reaches zero.
+func (al *AgentLoop) activeRequestsDec() {
+	al.activeReqMu.Lock()
+	al.activeReqCount--
+	if al.activeReqCount == 0 {
+		al.activeReqCond.Broadcast()
+	}
+	al.activeReqMu.Unlock()
+}
+
+func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
+	al.activeReqMu.Lock()
+	if al.activeReqCount == 0 {
+		al.activeReqMu.Unlock()
+		return true
+	}
+
+	// Wake blocked Wait() callers on timeout or context cancellation.
+	var timedOut bool
+	if timeout > 0 {
+		time.AfterFunc(timeout, func() {
+			al.activeReqMu.Lock()
+			timedOut = true
+			al.activeReqCond.Broadcast()
+			al.activeReqMu.Unlock()
+		})
+	}
+	go func() {
+		<-ctx.Done()
+		al.activeReqMu.Lock()
+		al.activeReqCond.Broadcast()
+		al.activeReqMu.Unlock()
+	}()
+
+	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
+		al.activeReqCond.Wait()
+	}
+	result := al.activeReqCount == 0
+	al.activeReqMu.Unlock()
+	return result
+}
+
+func (al *AgentLoop) closeReloadedProvider(ctx context.Context, provider providers.StatefulProvider) {
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+
+	drained := al.waitForActiveRequests(waitCtx, providerReloadGracePeriod)
+	if !drained {
+		fields := map[string]any{"grace_period": providerReloadGracePeriod.String()}
+		if err := waitCtx.Err(); err != nil {
+			fields["error"] = err.Error()
+			logger.WarnCF("agent", "Provider reload interrupted while waiting for in-flight requests", fields)
+		} else {
+			logger.WarnCF("agent", "Provider reload grace period expired with in-flight requests still running", fields)
+		}
+	}
+
+	provider.Close()
 }
 
 func makePendingTurnID(sessionKey string, seq uint64) string {

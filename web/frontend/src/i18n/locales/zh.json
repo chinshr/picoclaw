@@ -76,6 +76,8 @@
     "copyMessage": "复制消息",
     "copyCode": "复制代码",
     "copiedLabel": "已复制",
+    "enableCodeWrap": "开启换行",
+    "disableCodeWrap": "关闭换行",
     "expandCode": "展开代码",
     "collapseCode": "折叠代码",
     "history": "历史记录",
@@ -91,12 +93,15 @@
       "noModel": "未设置默认模型，请前往模型页面进行配置。"
     },
     "sendMessage": "发送消息",
-    "sendHint": "按 Enter 发送\nShift + Enter 换行",
+    "composeHint": "按 Enter 发送，Shift + Enter 换行",
     "contextTitle": "上下文",
     "contextDetail": "查看详情",
+    "contextCompressAt": "压缩阈值",
+    "contextSummarizeAt": "摘要阈值",
     "attachImage": "添加图片",
+    "dropImagesActive": "松开以添加图片",
     "removeImage": "移除图片",
-    "uploadedImage": "已上传图片",
+    "uploadedImage": "已添加图片",
     "invalidImage": "“{{name}}”不是支持的图片文件。",
     "imageTooLarge": "“{{name}}”超过了 {{size}} 限制。",
     "imageReadFailed": "读取“{{name}}”失败。",
@@ -232,6 +237,8 @@
     "unsavedPrompt": "当前修改尚未保存，保存后才会写入模型配置。",
     "restartHint": "模型配置保存后需要重启服务才能生效。",
     "loadError": "加载模型列表失败",
+    "retry": "重试",
+    "providerCatalogUnavailable": "后端 Provider catalog 暂不可用，待模型 API 成功加载后才能选择新的 Provider。",
     "noDefaultHintPrefix": "尚未设置默认模型，点击",
     "noDefaultHintSuffix": "设为默认。",
     "status": {
@@ -252,7 +259,7 @@
         "unavailable": "无法将不可用的模型设为默认",
         "isDefault": "该模型已是默认模型",
         "isVirtual": "无法将虚拟模型设为默认",
-        "unsupportedProvider": "该 Provider 仅用于 ASR，不能设为默认聊天模型"
+        "unsupportedProvider": "该服务商不能设为默认聊天模型。"
       },
       "deleteDisabled": {
         "isDefault": "无法删除默认模型"
@@ -261,8 +268,7 @@
     "defaultOnSave": {
       "label": "默认模型",
       "description": "保存后自动将该模型设置为默认模型。",
-      "unsupportedProvider": "该 Provider 可以保存在 model_list 中，但不能作为默认聊天模型使用。",
-      "clearOnSave": "保存这个仅用于 ASR 的模型后，会清除当前的默认聊天模型设置。"
+      "unsupportedProvider": "该服务商可以保存在模型列表中，但不能作为默认聊天模型使用。"
     },
     "add": {
       "button": "添加模型",
@@ -311,7 +317,8 @@
       "rpm": "速率限制（RPM）",
       "rpmHint": "每分钟最大请求数，0 表示不限制。",
       "thinkingLevel": "思考级别",
-      "thinkingLevelHint": "扩展思考预算：off、low、medium、high、xhigh、adaptive。",
+      "thinkingLevelHint": "留空则不传 thinking_level，使用 Provider 默认值。可选值：off、low、medium、high、xhigh、adaptive。",
+      "providerDefault": "Provider 默认",
       "maxTokensField": "Max Tokens 字段名",
       "maxTokensFieldHint": "覆盖请求中 max_tokens 的字段名，例如 max_completion_tokens。",
       "toolSchemaTransform": "工具 Schema 转换",
@@ -341,10 +348,12 @@
       "retry": "重试",
       "filterPlaceholder": "筛选模型...",
       "found": "已找到 {{count}} 个模型",
+      "found_plural": "已找到 {{count}} 个模型",
       "shown": "（显示 {{count}} 个）",
       "selectAll": "全选",
       "deselectAll": "取消全选",
       "fill": "填充 {{count}} 个选中的模型",
+      "fill_plural": "填充 {{count}} 个选中的模型",
       "failed": "获取模型失败"
     },
     "catalog": {
@@ -359,6 +368,7 @@
       "delete": "删除目录",
       "refresh": "从上游刷新",
       "found": "共 {{count}} 个模型",
+      "found_plural": "共 {{count}} 个模型",
       "selectAll": "全选",
       "deselectAll": "取消全选",
       "addSelected": "添加 {{count}} 个选中模型",
@@ -396,9 +406,8 @@
       "selectProvider": "选择服务商...",
       "searchProvider": "搜索服务商...",
       "noProvider": "未找到服务商。",
-      "local": "本地",
-      "custom": "自定义服务商...",
-      "customPlaceholder": "输入服务商名称..."
+      "noCatalog": "Provider catalog 暂不可用。",
+      "local": "本地"
     }
   },
   "channels": {
@@ -784,6 +793,23 @@
       "summarize_threshold_hint": "消息数量达到该值后开始触发摘要",
       "summarize_token_percent": "摘要目标 Token 百分比",
       "summarize_token_percent_hint": "在触发会话摘要时使用",
+      "turn_profile": "请求上下文策略",
+      "turn_profile_hint": "控制每次请求会带入哪些上下文。保持关闭时，普通对话完全沿用原逻辑。",
+      "turn_profile_enabled": "启用策略",
+      "turn_profile_enabled_hint": "启用后，每个新回合都会应用下面的设置；关闭时，PicoClaw 使用原来的上下文行为。",
+      "turn_profile_mode_default": "默认",
+      "turn_profile_mode_off": "关闭",
+      "turn_profile_mode_custom": "只允许列表",
+      "turn_profile_history": "历史上下文",
+      "turn_profile_history_hint": "默认会带上这段会话之前的消息；关闭后，本轮像一次新对话，也不会把结果写回历史。",
+      "turn_profile_system_prompt": "系统上下文",
+      "turn_profile_system_prompt_hint": "默认会带上 PicoClaw 的身份、工作区、记忆和运行时说明；关闭后只保留外部明确传入的 system prompt。",
+      "turn_profile_skills": "技能提示",
+      "turn_profile_skills_hint": "默认会把可用技能和已激活技能写入提示；关闭后不写入；只允许列表时每行填写一个技能名。",
+      "turn_profile_skills_allow_placeholder": "skill-name\nanother-skill",
+      "turn_profile_tools": "可调用工具",
+      "turn_profile_tools_hint": "默认暴露正常工具；关闭后模型不能调用工具；只允许列表时每行填写一个工具名，例如 web_search。",
+      "turn_profile_tools_allow_placeholder": "web_search\nweb_fetch",
       "session_scope": "会话隔离范围",
       "session_scope_hint": "定义不同用户/频道之间如何隔离会话上下文",
       "session_scope_per_channel_peer": "按频道+用户隔离",
@@ -824,6 +850,11 @@
       "allowed_cidrs": "允许访问网段",
       "allowed_cidrs_hint": "仅允许这些 CIDR 网段的客户端访问服务。可按行或逗号分隔；留空表示允许所有来源",
       "allowed_cidrs_placeholder": "192.168.1.0/24\n10.0.0.0/8",
+      "allow_localhost_bypass": "允许 localhost 绕过",
+      "allow_localhost_bypass_hint": "启用后，即使 localhost 请求不匹配允许访问网段，也会被放行。如果启动器位于同主机代理之后，建议关闭。",
+      "trusted_proxy_cidrs": "可信代理网段",
+      "trusted_proxy_cidrs_hint": "仅这些 CIDR 网段内的代理可以传递客户端 IP 信息，例如 X-Forwarded-For。留空表示忽略代理传递的客户端 IP 头。",
+      "trusted_proxy_cidrs_placeholder": "172.16.0.0/12\n127.0.0.1/32",
       "evolution_section_hint": "让 Agent 从已完成的回合中学习，并准备技能改进。",
       "evolution_enabled": "启用自进化",
       "evolution_enabled_hint": "记录已完成回合的学习数据。Draft 和 Apply 模式还可以生成技能更新。",
@@ -898,7 +929,13 @@
       "format_success": "JSON 格式化成功",
       "format_error": "JSON 格式无效",
       "format": "格式化",
-      "unsaved_changes": "您有未保存的更改"
+      "unsaved_changes": "您有未保存的更改",
+      "factory_reset": "恢复出厂设置",
+      "factory_reset_confirm_title": "恢复出厂设置",
+      "factory_reset_confirm_desc": "这将把所有配置重置为出厂默认值。API 密钥和安全凭证将被保留。当前配置将被备份。",
+      "factory_reset_confirm": "确认重置",
+      "factory_reset_success": "配置已重置为出厂默认值。",
+      "factory_reset_error": "重置配置失败。"
     },
     "logs": {
       "log_level_error": "更新日志等级失败。",

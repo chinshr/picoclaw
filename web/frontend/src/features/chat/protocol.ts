@@ -78,9 +78,19 @@ function parseContextUsage(
   return {
     used_tokens: used,
     total_tokens: total,
+    history_tokens: obj.history_tokens != null ? Number(obj.history_tokens) : undefined,
     compress_at_tokens: Number(obj.compress_at_tokens) || 0,
+    summarize_at_tokens: obj.summarize_at_tokens != null ? Number(obj.summarize_at_tokens) : undefined,
     used_percent: Number(obj.used_percent) || 0,
   }
+}
+
+function parseModelName(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.model_name !== "string") {
+    return undefined
+  }
+  const modelName = payload.model_name.trim()
+  return modelName || undefined
 }
 
 export function handlePicoMessage(
@@ -102,6 +112,7 @@ export function handlePicoMessage(
       const attachments = parseAttachments(payload)
       const contextUsage = parseContextUsage(payload)
       const isPlaceholder = payload.placeholder === true
+      const modelName = parseModelName(payload)
       const timestamp =
         message.timestamp !== undefined &&
         Number.isFinite(Number(message.timestamp))
@@ -116,6 +127,7 @@ export function handlePicoMessage(
             role: "assistant",
             content,
             kind,
+            ...(modelName ? { modelName } : {}),
             ...(toolCalls ? { toolCalls } : {}),
             attachments,
             timestamp,
@@ -135,6 +147,7 @@ export function handlePicoMessage(
       const messageId = payload.message_id as string
       const attachments = parseAttachments(payload)
       const contextUsage = parseContextUsage(payload)
+      const modelName = parseModelName(payload)
       const timestamp =
         message.timestamp !== undefined &&
         Number.isFinite(Number(message.timestamp))
@@ -160,6 +173,7 @@ export function handlePicoMessage(
               content,
               kind,
               toolCalls,
+              ...(modelName ? { modelName } : {}),
               ...(attachments ? { attachments } : {}),
             }
           })
@@ -178,6 +192,7 @@ export function handlePicoMessage(
               content,
               kind,
               toolCalls,
+              ...(modelName ? { modelName } : {}),
               ...(attachments ? { attachments } : {}),
               timestamp,
             },

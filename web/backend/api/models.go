@@ -18,19 +18,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-// fetchableProviders lists providers that support OpenAI-compatible /models listing.
-var fetchableProviders = map[string]bool{
-	"openai": true, "deepseek": true, "openrouter": true,
-	"qwen-portal": true, "qwen-intl": true, "moonshot": true,
-	"volcengine": true, "zhipu": true, "groq": true,
-	"mistral": true, "nvidia": true, "cerebras": true,
-	"venice": true, "shengsuanyun": true, "vivgrid": true,
-	"siliconflow": true,
-	"minimax":     true, "longcat": true, "modelscope": true,
-	"mimo": true, "avian": true, "zai": true, "novita": true,
-	"litellm": true, "vllm": true, "lmstudio": true, "ollama": true,
-}
-
 // registerModelRoutes binds model list management endpoints to the ServeMux.
 func (h *Handler) registerModelRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/models", h.handleListModels)
@@ -653,9 +640,10 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		Provider string `json:"provider"`
-		APIKey   string `json:"api_key"`
-		APIBase  string `json:"api_base"`
+		Provider   string `json:"provider"`
+		APIKey     string `json:"api_key"`
+		APIBase    string `json:"api_base"`
+		ModelIndex *int   `json:"model_index,omitempty"`
 	}
 	if err = json.Unmarshal(body, &req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
@@ -667,12 +655,20 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !fetchableProviders[strings.ToLower(req.Provider)] {
+	if !providers.IsModelProviderFetchable(req.Provider) {
 		http.Error(w, fmt.Sprintf("provider %q does not support model listing", req.Provider), http.StatusBadRequest)
 		return
 	}
 
+	apiKey := strings.TrimSpace(req.APIKey)
 	apiBase := strings.TrimSpace(req.APIBase)
+
+	if apiKey == "" && req.ModelIndex != nil {
+		if stored := h.lookupStoredAPIKey(*req.ModelIndex, req.Provider, apiBase); stored != "" {
+			apiKey = stored
+		}
+	}
+
 	if apiBase == "" {
 		apiBase = providers.DefaultAPIBaseForProtocol(req.Provider)
 	}
@@ -684,7 +680,7 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	models, err := fetchUpstreamModels(ctx, req.Provider, apiBase, req.APIKey)
+	models, err := fetchUpstreamModels(ctx, req.Provider, apiBase, apiKey)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to fetch models: %v", err), http.StatusBadGateway)
 		return
@@ -695,7 +691,7 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	for i, m := range models {
 		catalogModels[i] = CatalogModel{ID: m.ID, OwnedBy: m.OwnedBy}
 	}
-	if saveErr := SaveCatalog(req.Provider, apiBase, req.APIKey, catalogModels); saveErr != nil {
+	if saveErr := SaveCatalog(req.Provider, apiBase, apiKey, catalogModels); saveErr != nil {
 		// Log but don't fail the request — saving catalog is non-critical
 		logger.Warnf("Failed to save model catalog: %v", saveErr)
 	}
@@ -707,6 +703,30 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) lookupStoredAPIKey(index int, reqProvider, reqAPIBase string) string {
+	cfg, err := config.LoadConfig(h.configPath)
+	if err != nil || index < 0 || index >= len(cfg.ModelList) {
+		return ""
+	}
+	stored := cfg.ModelList[index]
+	storedProvider, _ := providers.ExtractProtocol(stored)
+	if providers.NormalizeProvider(reqProvider) != providers.NormalizeProvider(storedProvider) {
+		return ""
+	}
+	effectiveReqBase := strings.TrimSpace(reqAPIBase)
+	if effectiveReqBase == "" {
+		effectiveReqBase = providers.DefaultAPIBaseForProtocol(reqProvider)
+	}
+	effectiveStoredBase := strings.TrimSpace(stored.APIBase)
+	if effectiveStoredBase == "" {
+		effectiveStoredBase = providers.DefaultAPIBaseForProtocol(storedProvider)
+	}
+	if normalizeAPIBaseForCompare(effectiveReqBase) != normalizeAPIBaseForCompare(effectiveStoredBase) {
+		return ""
+	}
+	return stored.APIKey()
+}
+
 type upstreamModel struct {
 	ID      string `json:"id"`
 	OwnedBy string `json:"owned_by,omitempty"`
@@ -714,9 +734,10 @@ type upstreamModel struct {
 
 func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) ([]upstreamModel, error) {
 	apiBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
+	provider = providers.NormalizeProvider(provider)
 
 	var fetchURL string
-	switch strings.ToLower(provider) {
+	switch provider {
 	case "ollama":
 		// Strip /v1 suffix if present to get the Ollama root
 		root := apiBase
@@ -726,11 +747,61 @@ func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) 
 		root = strings.TrimRight(root, "/")
 		fetchURL = root + "/api/tags"
 		return fetchOllamaModels(ctx, fetchURL)
+	case "nearai":
+		fetchURL = apiBase + "/model/list"
+		return fetchNearAIModels(ctx, fetchURL, apiKey)
 	default:
 		// OpenAI-compatible: /v1/models
 		fetchURL = apiBase + "/models"
 		return fetchOpenAICompatibleModels(ctx, fetchURL, apiKey)
 	}
+}
+
+func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("nearai returned status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Models []struct {
+			ModelID  string `json:"modelId"`
+			OwnedBy  string `json:"ownedBy"`
+			Metadata struct {
+				OwnedBy string `json:"ownedBy"`
+			} `json:"metadata"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+
+	models := make([]upstreamModel, 0, len(parsed.Models))
+	for _, m := range parsed.Models {
+		id := strings.TrimSpace(m.ModelID)
+		if id == "" {
+			continue
+		}
+		ownedBy := strings.TrimSpace(m.OwnedBy)
+		if ownedBy == "" {
+			ownedBy = strings.TrimSpace(m.Metadata.OwnedBy)
+		}
+		models = append(models, upstreamModel{ID: id, OwnedBy: ownedBy})
+	}
+	return models, nil
 }
 
 func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
@@ -1010,13 +1081,13 @@ func probeModelConnectivity(m *config.ModelConfig) bool {
 	switch protocol {
 	case "ollama":
 		return probeOllamaModel(apiBase, modelID)
-	case "vllm", "lmstudio":
+	case "vllm", "lmstudio", "gpt4free":
 		return probeOpenAICompatibleModel(apiBase, modelID, m.APIKey())
-	case "github-copilot", "copilot":
+	case "github-copilot":
 		return probeTCPService(apiBase)
-	case "claude-cli", "claudecli":
+	case "claude-cli":
 		return probeCommandAvailable("claude")
-	case "codex-cli", "codexcli":
+	case "codex-cli":
 		return probeCommandAvailable("codex")
 	default:
 		// For remote providers (OpenAI, Anthropic, Gemini, DeepSeek, etc.),

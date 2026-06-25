@@ -88,7 +88,7 @@ func DefaultConfig() *Config {
 			{
 				ModelName: "claude-sonnet-4.6",
 				Provider:  "anthropic",
-				Model:     "claude-sonnet-4.6",
+				Model:     "claude-sonnet-4-6",
 				APIBase:   "https://api.anthropic.com/v1",
 			},
 
@@ -106,6 +106,14 @@ func DefaultConfig() *Config {
 				Provider:  "venice",
 				Model:     "venice-uncensored",
 				APIBase:   "https://api.venice.ai/api/v1",
+			},
+
+			// NEAR AI Cloud TEE inference - https://near.ai
+			{
+				ModelName: "nearai-glm",
+				Provider:  "nearai",
+				Model:     "zai-org/GLM-5.1-FP8",
+				APIBase:   "https://cloud-api.near.ai/v1",
 			},
 
 			// Google Gemini - https://ai.google.dev/
@@ -333,6 +341,11 @@ func DefaultConfig() *Config {
 					Enabled:    false,
 					MaxResults: 5,
 				},
+				Kagi: KagiConfig{
+					Enabled:    false,
+					BaseURL:    "https://kagi.com/api/v1/search",
+					MaxResults: 5,
+				},
 				Sogou: SogouConfig{
 					Enabled:    true,
 					MaxResults: 5,
@@ -447,8 +460,11 @@ func DefaultConfig() *Config {
 			LoadImage: ToolConfig{
 				Enabled: true,
 			},
-			Message: ToolConfig{
-				Enabled: true,
+			Message: MessageToolsConfig{
+				ToolConfig: ToolConfig{
+					Enabled: true,
+				},
+				MediaEnabled: false,
 			},
 			ReadFile: ReadFileToolConfig{
 				Enabled:         true,

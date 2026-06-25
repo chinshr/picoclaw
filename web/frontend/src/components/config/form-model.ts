@@ -20,6 +20,7 @@ export interface CoreConfigForm {
   maxToolIterations: string
   summarizeMessageThreshold: string
   summarizeTokenPercent: string
+  turnProfile: TurnProfileForm
   dmScope: string
   heartbeatEnabled: boolean
   heartbeatInterval: string
@@ -43,6 +44,18 @@ export interface CoreConfigForm {
 
 export type MCPServerType = "http" | "sse" | "stdio"
 
+export type TurnProfileMode = "default" | "off" | "custom"
+
+export interface TurnProfileForm {
+  enabled: boolean
+  historyMode: Exclude<TurnProfileMode, "custom">
+  systemPromptMode: Exclude<TurnProfileMode, "custom">
+  skillsMode: TurnProfileMode
+  skillsAllowText: string
+  toolsMode: TurnProfileMode
+  toolsAllowText: string
+}
+
 export interface MCPServerForm {
   id: string
   name: string
@@ -61,6 +74,8 @@ export interface LauncherForm {
   port: string
   publicAccess: boolean
   allowedCIDRsText: string
+  allowLocalhostBypass: boolean
+  trustedProxyCIDRsText: string
   dashboardPassword: string
   dashboardPasswordConfirm: string
 }
@@ -116,6 +131,15 @@ export const EMPTY_FORM: CoreConfigForm = {
   maxToolIterations: "50",
   summarizeMessageThreshold: "20",
   summarizeTokenPercent: "75",
+  turnProfile: {
+    enabled: false,
+    historyMode: "default",
+    systemPromptMode: "default",
+    skillsMode: "default",
+    skillsAllowText: "",
+    toolsMode: "default",
+    toolsAllowText: "",
+  },
   dmScope: "per-channel-peer",
   heartbeatEnabled: true,
   heartbeatInterval: "30",
@@ -141,6 +165,8 @@ export const EMPTY_LAUNCHER_FORM: LauncherForm = {
   port: "18800",
   publicAccess: false,
   allowedCIDRsText: "",
+  allowLocalhostBypass: true,
+  trustedProxyCIDRsText: "",
   dashboardPassword: "",
   dashboardPasswordConfirm: "",
 }
@@ -220,6 +246,46 @@ function mapMCPServers(value: unknown): MCPServerForm[] {
       headersText: JSON.stringify(headers, null, 2),
     }
   })
+}
+
+function toTurnProfileMode(value: unknown): TurnProfileMode {
+  if (value === "off" || value === "custom") {
+    return value
+  }
+  return "default"
+}
+
+function toBasicTurnProfileMode(
+  value: unknown,
+): Exclude<TurnProfileMode, "custom"> {
+  return value === "off" ? "off" : "default"
+}
+
+function allowListText(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ""
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .join("\n")
+}
+
+function mapTurnProfile(value: unknown): TurnProfileForm {
+  const profile = asRecord(value)
+  const history = asRecord(profile.history)
+  const systemPrompt = asRecord(profile.system_prompt)
+  const skills = asRecord(profile.skills)
+  const tools = asRecord(profile.tools)
+
+  return {
+    enabled: asBool(profile.enabled),
+    historyMode: toBasicTurnProfileMode(history.mode),
+    systemPromptMode: toBasicTurnProfileMode(systemPrompt.mode),
+    skillsMode: toTurnProfileMode(skills.mode),
+    skillsAllowText: allowListText(skills.allow),
+    toolsMode: toTurnProfileMode(tools.mode),
+    toolsAllowText: allowListText(tools.allow),
+  }
 }
 
 export function buildFormFromConfig(config: unknown): CoreConfigForm {
@@ -310,6 +376,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       defaults.summarize_token_percent,
       EMPTY_FORM.summarizeTokenPercent,
     ),
+    turnProfile: mapTurnProfile(defaults.turn_profile),
     dmScope: asString(session.dm_scope) || EMPTY_FORM.dmScope,
     heartbeatEnabled:
       heartbeat.enabled === undefined

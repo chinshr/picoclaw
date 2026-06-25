@@ -210,14 +210,22 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 		conv.ConversationID,
 		"assistant",
 		"hello world",
+		"gpt-5.4-mini",
 		"let me think",
 		5,
+		time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 	)
 	if err != nil {
 		t.Fatalf("AddMessageWithReasoning: %v", err)
 	}
 	if msg.ReasoningContent != "let me think" {
 		t.Fatalf("ReasoningContent = %q, want %q", msg.ReasoningContent, "let me think")
+	}
+	if msg.ModelName != "gpt-5.4-mini" {
+		t.Fatalf("ModelName = %q, want %q", msg.ModelName, "gpt-5.4-mini")
+	}
+	if !msg.CreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Fatalf("CreatedAt = %v, want 2026-01-02 03:04:05 UTC", msg.CreatedAt)
 	}
 
 	msgs, err := s.GetMessages(ctx, conv.ConversationID, 10, 0)
@@ -230,6 +238,12 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 	if msgs[0].ReasoningContent != "let me think" {
 		t.Errorf("ReasoningContent = %q, want %q", msgs[0].ReasoningContent, "let me think")
 	}
+	if msgs[0].ModelName != "gpt-5.4-mini" {
+		t.Errorf("ModelName = %q, want %q", msgs[0].ModelName, "gpt-5.4-mini")
+	}
+	if !msgs[0].CreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Errorf("CreatedAt = %v, want 2026-01-02 03:04:05 UTC", msgs[0].CreatedAt)
+	}
 
 	found, err := s.GetMessageByID(ctx, msg.ID)
 	if err != nil {
@@ -237,6 +251,12 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 	}
 	if found.ReasoningContent != "let me think" {
 		t.Errorf("GetMessageByID ReasoningContent = %q, want %q", found.ReasoningContent, "let me think")
+	}
+	if found.ModelName != "gpt-5.4-mini" {
+		t.Errorf("GetMessageByID ModelName = %q, want %q", found.ModelName, "gpt-5.4-mini")
+	}
+	if !found.CreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Errorf("GetMessageByID CreatedAt = %v, want 2026-01-02 03:04:05 UTC", found.CreatedAt)
 	}
 }
 
@@ -288,8 +308,10 @@ func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
 		conv.ConversationID,
 		"assistant",
 		parts,
+		"gpt-5.4",
 		"need to inspect the file first",
 		10,
+		time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
 	)
 	if err != nil {
 		t.Fatalf("AddMessageWithPartsAndReasoning: %v", err)
@@ -308,6 +330,12 @@ func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
 			msgs[0].ReasoningContent,
 			"need to inspect the file first",
 		)
+	}
+	if msgs[0].ModelName != "gpt-5.4" {
+		t.Errorf("ModelName = %q, want %q", msgs[0].ModelName, "gpt-5.4")
+	}
+	if !msgs[0].CreatedAt.Equal(time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)) {
+		t.Errorf("CreatedAt = %v, want 2026-02-03 04:05:06 UTC", msgs[0].CreatedAt)
 	}
 }
 

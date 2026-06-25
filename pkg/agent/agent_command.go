@@ -319,6 +319,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			agent.Provider = nextProvider
 			agent.Candidates = nextCandidates
 			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
+			agent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
 
 			if oldProvider != nil && oldProvider != nextProvider {
 				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
@@ -349,11 +350,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 			}
 			history := agent.Sessions.GetHistory(opts.SessionKey)
 			return &commands.ContextStats{
-				UsedTokens:       usage.UsedTokens,
-				TotalTokens:      usage.TotalTokens,
-				CompressAtTokens: usage.CompressAtTokens,
-				UsedPercent:      usage.UsedPercent,
-				MessageCount:     len(history),
+				UsedTokens:        usage.UsedTokens,
+				TotalTokens:       usage.TotalTokens,
+				HistoryTokens:     usage.HistoryTokens,
+				CompressAtTokens:  usage.CompressAtTokens,
+				SummarizeAtTokens: usage.SummarizeAtTokens,
+				UsedPercent:       usage.UsedPercent,
+				MessageCount:      len(history),
 			}
 		}
 	}

@@ -126,6 +126,44 @@ Baidu Search uses the [Qianfan AI Search API](https://cloud.baidu.com/doc/qianfa
 | `api_keys`    | string[] | -       | Multiple API keys for rotation (takes priority over `api_key`) |
 | `max_results` | int      | 5       | Maximum number of results                      |
 
+### Kagi Search
+
+Kagi Search uses the official Kagi OpenAPI client for `POST /search` and returns normal web results from `data.search`.
+
+| Config        | Type     | Default                               | Description                                    |
+|---------------|----------|---------------------------------------|------------------------------------------------|
+| `enabled`     | bool     | false                                 | Enable Kagi Search                             |
+| `api_key`     | string   | -                                     | Kagi API key                                   |
+| `api_keys`    | string[] | -                                     | Multiple API keys for rotation (takes priority over `api_key`) |
+| `base_url`    | string   | `https://kagi.com/api/v1/search`      | Kagi Search API endpoint                       |
+| `max_results` | int      | 5                                     | Maximum number of results                      |
+
+```json
+{
+  "tools": {
+    "web": {
+      "provider": "kagi",
+      "kagi": {
+        "enabled": true,
+        "max_results": 5,
+        "base_url": "https://kagi.com/api/v1/search"
+      }
+    }
+  }
+}
+```
+
+Store Kagi API keys in `.security.yml`:
+
+```yaml
+web:
+  kagi:
+    api_keys:
+      - "YOUR_KAGI_API_KEY"
+```
+
+Kagi API usage may be billed or limited separately from a normal Kagi subscription, depending on your account and API setup.
+
 ### Tavily
 
 | Config        | Type   | Default | Description               |
@@ -171,6 +209,7 @@ At runtime, the `web_search` tool accepts the following parameters:
 | `range` | string | no | Optional time filter: `d` (day), `w` (week), `m` (month), `y` (year) |
 
 If `range` is omitted, PicoClaw performs an unrestricted search.
+For Kagi, `d`, `w`, and `m` map to Kagi lens `time_relative`; `y` maps to a lens `time_after` date one year before the current day.
 
 ### Example `web_search` Call
 
@@ -272,11 +311,12 @@ as containers, VMs, or an approval flow around build-and-run commands.
 
 The cron tool is used for scheduling periodic tasks.
 
-| Config                 | Type | Default | Description                                    |
-|------------------------|------|---------|------------------------------------------------|
-| `enabled`              | bool | true    | Register the agent-facing cron tool            |
-| `allow_command`        | bool | true    | Allow command jobs without extra confirmation  |
-| `exec_timeout_minutes` | int  | 5       | Execution timeout in minutes, 0 means no limit |
+| Config                    | Type     | Default | Description                                                    |
+|---------------------------|----------|---------|----------------------------------------------------------------|
+| `enabled`                 | bool     | true    | Register the agent-facing cron tool                            |
+| `allow_command`           | bool     | true    | Allow command jobs without extra confirmation                  |
+| `command_allowed_remotes` | string[] | []      | Remote channels or `channel:chat_id` values allowed for command jobs; `*` allows every channel and is dangerous unless all remote channels are trusted |
+| `exec_timeout_minutes`    | int      | 5       | Execution timeout in minutes, 0 means no limit                 |
 
 For schedule types, execution modes (`deliver`, agent turn, and command jobs), persistence, and the current command-security gates, see [Scheduled Tasks and Cron Jobs](cron.md).
 

@@ -1,14 +1,12 @@
 package onboard
 
 import (
-	"embed"
-
 	"github.com/spf13/cobra"
+
+	picoclaw "github.com/sipeed/picoclaw"
 )
 
-//go:generate go run ../../../../scripts/copydir.go ../../../../workspace ./workspace
-//go:embed workspace
-var embeddedFiles embed.FS
+var embeddedFiles = picoclaw.OnboardWorkspace
 
 func NewOnboardCommand() *cobra.Command {
 	var encrypt bool

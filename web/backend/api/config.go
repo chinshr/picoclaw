@@ -18,6 +18,7 @@ func (h *Handler) registerConfigRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/config", h.handleGetConfig)
 	mux.HandleFunc("PUT /api/config", h.handleUpdateConfig)
 	mux.HandleFunc("PATCH /api/config", h.handlePatchConfig)
+	mux.HandleFunc("POST /api/config/reset", h.handleResetConfig)
 	mux.HandleFunc("POST /api/config/test-command-patterns", h.handleTestCommandPatterns)
 }
 
@@ -75,6 +76,8 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
+	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
 	if execAllowRemoteOmitted(body) {
 		cfg.Tools.Exec.AllowRemote = config.DefaultConfig().Tools.Exec.AllowRemote
 	}
@@ -163,6 +166,20 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Recursively merge patch into base
 	mergeMap(base, patch)
+
+	// When the patch updates dm_scope, the old derived dimensions from the
+	// base must be cleared so that ApplyDmScope() can re-derive them from
+	// the new dm_scope value. Otherwise the stale dimensions survive the
+	// merge and ApplyDmScope() exits early due to its precedence guard.
+	if sess, ok := base["session"].(map[string]any); ok {
+		if patchSess, patchHasSession := patch["session"].(map[string]any); patchHasSession {
+			if _, hasDmScope := patchSess["dm_scope"]; hasDmScope {
+				if _, hasDimsInPatch := patchSess["dimensions"]; !hasDimsInPatch {
+					delete(sess, "dimensions")
+				}
+			}
+		}
+	}
 	if err = normalizeChannelArrayFields(base); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid channel array field: %v", err), http.StatusBadRequest)
 		return
@@ -180,6 +197,8 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Merged config is invalid: %v", err), http.StatusBadRequest)
 		return
 	}
+	newCfg.Session.ApplyDmScope()
+	newCfg.Session.DeriveDmScope()
 
 	// Restore security fields (tokens/keys) from the loaded config before validation,
 	// because private fields are lost during JSON round-trip.
@@ -206,6 +225,32 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 
 	h.applyRuntimeLogLevel()
 	logger.Infof("configuration updated successfully")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleResetConfig resets the configuration to factory defaults.
+// API keys and security credentials are preserved.
+//
+//	POST /api/config/reset
+func (h *Handler) handleResetConfig(w http.ResponseWriter, r *http.Request) {
+	if err := config.ResetToDefaults(h.configPath); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to reset config: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	h.applyRuntimeLogLevel()
+	logger.Infof("configuration reset to factory defaults")
+
+	// Restart gateway if running
+	status := h.gatewayStatusData()
+	gatewayStatus, _ := status["gateway_status"].(string)
+	if gatewayStatus == "running" {
+		if _, err := h.RestartGateway(); err != nil {
+			logger.ErrorF("failed to restart gateway after config reset", map[string]any{"error": err.Error()})
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -282,6 +327,10 @@ func validateConfig(cfg *config.Config) []string {
 
 	// Validate model_list entries
 	if err := cfg.ValidateModelList(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if err := cfg.ValidateTurnProfile(); err != nil {
 		errs = append(errs, err.Error())
 	}
 

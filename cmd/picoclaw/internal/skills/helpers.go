@@ -79,7 +79,7 @@ func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) 
 	defer cancel()
 
 	if err = os.MkdirAll(filepath.Join(workspace, "skills"), 0o755); err != nil {
-		return fmt.Errorf("\u2717 failed to create skills directory: %v", err)
+		return fmt.Errorf("\u2717 failed to create skills directory: %w", err)
 	}
 
 	result, err := registry.DownloadAndInstall(ctx, target, "", targetDir)
@@ -302,6 +302,11 @@ func skillsSearchCmd(query string) {
 		if result.Version != "" {
 			fmt.Printf("     Version: %s\n", result.Version)
 		}
+		if result.RegistryName == "github" {
+			fmt.Printf("     Install: picoclaw skills install %s\n", result.Slug)
+		} else {
+			fmt.Printf("     Install: picoclaw skills install --registry=%s %s\n", result.RegistryName, result.Slug)
+		}
 		fmt.Println()
 	}
 }
@@ -345,9 +350,11 @@ func copyDirectory(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		defer dstFile.Close()
 
-		_, err = io.Copy(dstFile, srcFile)
-		return err
+		_, copyErr := io.Copy(dstFile, srcFile)
+		if closeErr := dstFile.Close(); closeErr != nil && copyErr == nil {
+			return fmt.Errorf("close destination file %s: %w", dstPath, closeErr)
+		}
+		return copyErr
 	})
 }
