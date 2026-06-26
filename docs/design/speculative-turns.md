@@ -299,3 +299,46 @@ bridge ─ message.send "what wines do you stock" (normal turn, clean history)
 - Integration: end-to-end with `STT_FORWARD_INTERIM=1` firmware, asserting a
   matched turn issues exactly one LLM call and a diverged turn leaves no phantom
   history.
+
+## Enablement & live verification
+
+Both flags default OFF, so the feature is dark until explicitly enabled. Enable
+in two places:
+
+1. **Bridge** (`library-claw` voice config):
+   ```yaml
+   voice:
+     preemptive_generation:
+       enabled: true
+       min_prefix_chars: 12        # don't speculate on trivially short prefixes
+       max_speculations_per_turn: 2 # bound wasted claw calls as the prefix grows
+   ```
+2. **Edge firmware**: build/flash with `STT_FORWARD_INTERIM=1` (config.h) so the
+   edge emits `transcript.interim` during the transcribe window.
+
+Then watch one conversation. Log markers to follow:
+
+- Bridge: `voice.preemptive speculate` (started), `voice.preemptive confirmed`
+  (matched, reply reused), `voice.preemptive discarded (final diverged)`, and
+  the `preempted=true` field on the `pico.turn` line.
+- picoclaw: `speculative turn aborted on tool call (no tools executed)`.
+
+Three checks (the parts unit tests can't cover):
+
+1. **Happy path / match** — say something simple ("what's on the shelf"). Expect
+   `speculate` → `confirmed`; reply spoken once; `ttfa_ms`/`e2e_latency_ms`
+   lower than baseline (claw ran during the transcribe window). In the picoclaw
+   session JSONL, the turn appears once as `[user, assistant]` — no duplicate.
+2. **Tool-abort latency** — ask something that needs a tool (an inventory
+   lookup). Expect the speculative turn to abort without running the tool, then a
+   normal turn that does run it. **Watch the fallback latency**: prompt = the
+   agent emitted a terminal frame on the empty turn (good); multi-second stall =
+   it did NOT, and the bridge waited out its timeout — fix by emitting a terminal
+   `message.create` on the speculative tool-abort (`pipeline_llm.go` TODO).
+3. **Divergence / no phantom history** — find an utterance whose stable interim
+   prefix differs from the committed final. Expect `discarded` → normal turn, and
+   the session JSONL shows NO leftover provisional user message.
+
+Rollback: set `preemptive_generation.enabled: false` (bridge) — no firmware
+reflash needed; `transcript.interim` events are simply ignored, and the legacy
+serial path resumes.
