@@ -1179,6 +1179,16 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if err != nil {
 			return ""
 		}
+		// Resolve symlinks on the workspace base too, so it is comparable to the
+		// command paths below (which are EvalSymlinks'd). Without this, on macOS
+		// where /var -> /private/var (and any symlinked working/temp dir), an
+		// in-workspace path resolves to /private/var/... while the base stays
+		// /var/..., making filepath.Rel start with ".." and wrongly flagging the
+		// path as outside the workspace. Fall back to the abs path if the dir
+		// doesn't exist yet.
+		if resolvedCwd, evalErr := filepath.EvalSymlinks(cwdPath); evalErr == nil && resolvedCwd != "" {
+			cwdPath = resolvedCwd
+		}
 
 		// Web URL schemes whose path components (starting with //) should be exempt
 		// from workspace sandbox checks. file: is intentionally excluded so that

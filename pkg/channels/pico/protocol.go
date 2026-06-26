@@ -12,6 +12,12 @@ const (
 	TypeMediaSend   = "media.send"
 	TypePing        = "ping"
 
+	// Speculative turns (docs/design/speculative-turns.md). A speculative
+	// message.send runs the turn with a reversible history write; the client
+	// later keeps it (turn.commit) or reverts it (turn.abort).
+	TypeTurnCommit = "turn.commit"
+	TypeTurnAbort  = "turn.abort"
+
 	// TypeMessageCreate is sent from server to client.
 	TypeMessageCreate = "message.create"
 	TypeMessageUpdate = "message.update"
@@ -28,6 +34,12 @@ const (
 	PayloadKeyPlaceholder = "placeholder"
 	PayloadKeyToolCalls   = "tool_calls"
 	PayloadKeyModelName   = "model_name"
+
+	// Speculative-turn payload keys (on message.send and turn.commit/abort).
+	// The Raw-metadata keys carrying speculation state into the agent pipeline
+	// live in pkg/bus (bus.RawKey*) so the agent can reference them too.
+	PayloadKeySpeculative   = "speculative"
+	PayloadKeySpeculationID = "speculation_id"
 
 	MessageKindThought   = "thought"
 	MessageKindToolCalls = "tool_calls"

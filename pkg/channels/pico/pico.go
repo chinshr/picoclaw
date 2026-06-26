@@ -1161,6 +1161,12 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 	case TypeMediaSend:
 		c.handleMessageSend(pc, msg)
 
+	case TypeTurnCommit:
+		c.handleTurnControl(pc, msg, bus.ControlCommit)
+
+	case TypeTurnAbort:
+		c.handleTurnControl(pc, msg, bus.ControlAbort)
+
 	default:
 		errMsg := newError("unknown_type", fmt.Sprintf("unknown message type: %s", msg.Type))
 		pc.writeJSON(errMsg)
@@ -1201,6 +1207,17 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		"conn_id":    pc.id,
 	}
 
+	// Speculative turns (docs/design/speculative-turns.md): carry the flag + id
+	// into the agent pipeline via InboundContext.Raw so the turn can run with a
+	// reversible history write and bail on tool calls. Additive — the agent
+	// ignores these keys until the speculation core lands.
+	if spec, _ := msg.Payload[PayloadKeySpeculative].(bool); spec {
+		if specID, _ := msg.Payload[PayloadKeySpeculationID].(string); strings.TrimSpace(specID) != "" {
+			metadata[bus.RawKeySpeculative] = "1"
+			metadata[bus.RawKeySpeculationID] = specID
+		}
+	}
+
 	logger.DebugCF("pico", "Received message", map[string]any{
 		"session_id": sessionID,
 		"preview":    truncate(content, 50),
@@ -1227,6 +1244,52 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 	}
 
 	c.HandleInboundContext(c.ctx, chatID, content, media, inboundCtx, sender)
+}
+
+// handleTurnControl forwards a speculative-turn commit/abort to the agent (the
+// session owner) as a control InboundMessage — empty content, Raw markers —
+// so the agent loop intercepts it before running any turn
+// (docs/design/speculative-turns.md). The channel itself has no session access.
+func (c *PicoChannel) handleTurnControl(pc *picoConn, msg PicoMessage, control string) {
+	specID, _ := msg.Payload[PayloadKeySpeculationID].(string)
+	if strings.TrimSpace(specID) == "" {
+		pc.writeJSON(newErrorWithPayload("missing_speculation_id",
+			"turn control requires speculation_id", map[string]any{"request_id": msg.ID}))
+		return
+	}
+	sessionID := msg.SessionID
+	if sessionID == "" {
+		sessionID = pc.sessionID
+	}
+	chatID := "pico:" + sessionID
+	senderID := "pico-user"
+	sender := bus.SenderInfo{
+		Platform:    "pico",
+		PlatformID:  senderID,
+		CanonicalID: identity.BuildCanonicalID("pico", senderID),
+	}
+	ctrlMsg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "pico",
+			ChatID:    chatID,
+			ChatType:  "direct",
+			SenderID:  senderID,
+			MessageID: msg.ID,
+			Raw: map[string]string{
+				"platform":               "pico",
+				"session_id":             sessionID,
+				bus.RawKeyControl:        control,
+				bus.RawKeySpeculationID:  specID,
+			},
+		},
+		Sender:  sender,
+		Content: "", // control message — never runs a turn
+	}
+	if err := c.EmitControl(c.ctx, ctrlMsg); err != nil {
+		logger.WarnCF("pico", "Failed to emit turn control", map[string]any{
+			"session_id": sessionID, "control": control, "speculation_id": specID, "error": err.Error(),
+		})
+	}
 }
 
 // truncate truncates a string to maxLen runes.

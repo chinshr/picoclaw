@@ -9,6 +9,17 @@ type SenderInfo struct {
 	DisplayName string `json:"display_name,omitempty"` // display name
 }
 
+// Speculative-turn control keys carried in InboundContext.Raw
+// (docs/design/speculative-turns.md). Neutral home so both the channel and the
+// agent can reference them without an import cycle.
+const (
+	RawKeySpeculative   = "pico_speculative"    // "1" when the turn is speculative
+	RawKeySpeculationID = "pico_speculation_id" // unique per session
+	RawKeyControl       = "pico_control"        // ControlCommit | ControlAbort (no turn run)
+	ControlCommit       = "commit"
+	ControlAbort        = "abort"
+)
+
 // InboundContext captures the normalized, platform-agnostic facts about an
 // inbound message. This is the source of truth for routing and session
 // allocation.

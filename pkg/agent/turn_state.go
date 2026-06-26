@@ -221,6 +221,12 @@ type turnState struct {
 	restorePointSummary string
 	persistedMessages   []providers.Message
 
+	// Speculative turn (docs/design/speculative-turns.md): when set, the turn's
+	// history write is reversible (tracked by the speculationManager) and the
+	// turn aborts rather than executing any tool.
+	speculative   bool
+	speculationID string
+
 	// SubTurn support (from HEAD)
 	depth                int                    // SubTurn depth (0 for root turn)
 	parentTurnID         string                 // Parent turn ID (empty for root turn)

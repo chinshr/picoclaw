@@ -55,6 +55,15 @@ func (r DispatchRequest) SenderID() string {
 	return r.InboundContext.SenderID
 }
 
+// Raw returns the inbound metadata map (nil-safe), used to read speculative-turn
+// markers (bus.RawKey*) threaded by the channel.
+func (r DispatchRequest) Raw() map[string]string {
+	if r.InboundContext == nil {
+		return nil
+	}
+	return r.InboundContext.Raw
+}
+
 func normalizeProcessOptionsInPlace(opts *processOptions) {
 	if opts == nil {
 		return

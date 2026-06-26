@@ -58,6 +58,7 @@ type AgentLoop struct {
 	evolution      *evolutionBridge
 	hookRuntime    hookRuntime
 	steering       *steeringQueue
+	speculation    *speculationManager
 	pendingSkills  sync.Map
 	pendingStops   sync.Map
 	mu             sync.RWMutex
@@ -166,6 +167,14 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 		case msg, ok := <-al.bus.InboundChan():
 			if !ok {
 				return nil
+			}
+
+			// Speculative-turn control (docs/design/speculative-turns.md):
+			// commit/abort ride the inbound bus as zero-content control
+			// messages. Intercept BEFORE turn dispatch — they never run a turn.
+			if ctrl := msg.Context.Raw[bus.RawKeyControl]; ctrl != "" {
+				al.handleSpeculationControl(msg, ctrl)
+				continue
 			}
 
 			// Resolve the session key for this message

@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -113,6 +114,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					"max_tokens":     ts.agent.MaxTokens,
 				})
 			}
+		}
+	}
+
+	// Speculative turn (docs/design/speculative-turns.md): tag the turn and
+	// snapshot the restore point BEFORE the user message is persisted, so an
+	// abort (transcript mismatch, or a tool call) truncates back to exactly the
+	// pre-turn history.
+	if raw := ts.opts.Dispatch.Raw(); raw != nil && raw[bus.RawKeySpeculative] == "1" {
+		ts.speculative = true
+		ts.speculationID = raw[bus.RawKeySpeculationID]
+		if p.al != nil && p.al.speculation != nil {
+			baseLen := len(ts.agent.Sessions.GetHistory(ts.sessionKey))
+			p.al.speculation.begin(ts.speculationID, ts.sessionKey, baseLen, ts.agent.Sessions.GetSummary(ts.sessionKey))
 		}
 	}
 

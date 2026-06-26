@@ -609,6 +609,29 @@ func (p *Pipeline) CallLLM(
 			"iteration": iteration,
 		})
 
+	// Speculative turn (docs/design/speculative-turns.md): chosen policy is to
+	// NEVER execute a tool inside a speculation — side effects can't be rolled
+	// back. End the turn with empty content WITHOUT executing tools. The bridge
+	// suppressed the speculative stream and, on empty content, issues turn.abort
+	// — which the speculationManager handles by truncating the session back to
+	// its pre-turn length. So we deliberately do NOT touch history or the
+	// speculation entry here (the manager's abort needs the entry to revert the
+	// user message persisted at setup); we just stop before any tool runs.
+	// TODO(build): (1) confirm ControlBreak with empty finalContent is the
+	// correct early terminal before tool execution; (2) ensure a terminal
+	// message.create (even empty) is emitted so the bridge's SendSpeculativeTurn
+	// unblocks promptly instead of waiting for timeout.
+	if ts.speculative {
+		cancelConfiguredStreamingLLM(turnCtx, exec)
+		exec.finalContent = ""
+		logger.InfoCF("agent", "speculative turn aborted on tool call (no tools executed)", map[string]any{
+			"agent_id":       ts.agent.ID,
+			"speculation_id": ts.speculationID,
+			"tools":          toolNames,
+		})
+		return ControlBreak, nil
+	}
+
 	exec.allResponsesHandled = len(exec.normalizedToolCalls) > 0
 	assistantMsg := providers.Message{
 		Role:             "assistant",

@@ -353,6 +353,24 @@ func (c *BaseChannel) HandleMessageWithContext(
 	}
 }
 
+// EmitControl publishes a control InboundMessage (e.g. speculative-turn
+// commit/abort) straight to the bus, bypassing the typing/placeholder/reaction
+// side effects of HandleMessageWithContext. The message carries its intent in
+// Context.Raw (bus.RawKeyControl); the agent loop intercepts it and never runs
+// a turn. Exposed because channel subpackages cannot reach the unexported bus
+// field. See docs/design/speculative-turns.md.
+func (c *BaseChannel) EmitControl(ctx context.Context, msg bus.InboundMessage) error {
+	if c.bus == nil {
+		return nil
+	}
+	msg.Context.Channel = c.name
+	if msg.Channel == "" {
+		msg.Channel = c.name
+	}
+	msg = bus.NormalizeInboundMessage(msg)
+	return c.bus.PublishInbound(ctx, msg)
+}
+
 // HandleInboundContext publishes a normalized inbound message using only the
 // structured context.
 func (c *BaseChannel) HandleInboundContext(
