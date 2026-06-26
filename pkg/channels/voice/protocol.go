@@ -12,6 +12,11 @@ const (
 	TypeMessageSend = "message.send"
 	TypePing        = "ping"
 
+	// Speculative turns (docs/design/speculative-turns.md). The bridge connects
+	// to THIS channel (/voice/ws), so the speculative protocol lives here.
+	TypeTurnCommit = "turn.commit"
+	TypeTurnAbort  = "turn.abort"
+
 	// Outbound (server → client).
 	TypeMessageCreate = "message.create"
 	TypeMessageUpdate = "message.update"
@@ -25,6 +30,10 @@ const (
 	PayloadKeyPlaceholder = "placeholder"
 	PayloadKeyKind        = "kind"
 	PayloadKeyFinal       = "final"
+
+	// Speculative-turn payload keys (Raw-metadata keys live in pkg/bus).
+	PayloadKeySpeculative   = "speculative"
+	PayloadKeySpeculationID = "speculation_id"
 
 	MessageKindThought = "thought"
 )

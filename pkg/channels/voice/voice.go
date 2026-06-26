@@ -575,6 +575,12 @@ func (c *VoiceChannel) handleMessage(vc *voiceConn, msg VoiceMessage) {
 	case TypeMessageSend:
 		c.handleMessageSend(vc, msg)
 
+	case TypeTurnCommit:
+		c.handleTurnControl(vc, msg, bus.ControlCommit)
+
+	case TypeTurnAbort:
+		c.handleTurnControl(vc, msg, bus.ControlAbort)
+
 	default:
 		errMsg := newError("unknown_type", fmt.Sprintf("unknown message type: %s", msg.Type), nil)
 		_ = vc.writeJSON(errMsg)
@@ -605,6 +611,17 @@ func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 		"conn_id":    vc.id,
 	}
 
+	// Speculative turns (docs/design/speculative-turns.md): thread the flag +
+	// id into the agent pipeline via Raw so the turn runs with a reversible
+	// history write and bails on tool calls. Additive — ignored until the
+	// agent speculation core is present.
+	if spec, _ := msg.Payload[PayloadKeySpeculative].(bool); spec {
+		if specID, _ := msg.Payload[PayloadKeySpeculationID].(string); strings.TrimSpace(specID) != "" {
+			metadata[bus.RawKeySpeculative] = "1"
+			metadata[bus.RawKeySpeculationID] = specID
+		}
+	}
+
 	logger.DebugCF("voice", "Received message", map[string]any{
 		"session_id": sessionID,
 		"preview":    truncate(content, 50),
@@ -629,6 +646,51 @@ func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 	}
 
 	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, sender)
+}
+
+// handleTurnControl forwards a speculative-turn commit/abort to the agent (the
+// session owner) as a zero-content control InboundMessage so the agent loop
+// intercepts it before running a turn (docs/design/speculative-turns.md).
+func (c *VoiceChannel) handleTurnControl(vc *voiceConn, msg VoiceMessage, control string) {
+	specID, _ := msg.Payload[PayloadKeySpeculationID].(string)
+	if strings.TrimSpace(specID) == "" {
+		_ = vc.writeJSON(newError("missing_speculation_id",
+			"turn control requires speculation_id", map[string]any{"request_id": msg.ID}))
+		return
+	}
+	sessionID := msg.SessionID
+	if sessionID == "" {
+		sessionID = vc.sessionID
+	}
+	chatID := "voice:" + sessionID
+	senderID := "voice-user"
+	sender := bus.SenderInfo{
+		Platform:    "voice",
+		PlatformID:  senderID,
+		CanonicalID: identity.BuildCanonicalID("voice", senderID),
+	}
+	ctrlMsg := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "voice",
+			ChatID:    chatID,
+			ChatType:  "direct",
+			SenderID:  senderID,
+			MessageID: msg.ID,
+			Raw: map[string]string{
+				"platform":              "voice",
+				"session_id":            sessionID,
+				bus.RawKeyControl:       control,
+				bus.RawKeySpeculationID: specID,
+			},
+		},
+		Sender:  sender,
+		Content: "", // control message — never runs a turn
+	}
+	if err := c.EmitControl(c.ctx, ctrlMsg); err != nil {
+		logger.WarnCF("voice", "Failed to emit turn control", map[string]any{
+			"session_id": sessionID, "control": control, "speculation_id": specID, "error": err.Error(),
+		})
+	}
 }
 
 func truncate(s string, maxLen int) string {
