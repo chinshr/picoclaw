@@ -1124,3 +1124,162 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 		t.Fatalf("snapshots[1] = %+v, want sequence=2 trigger=%q", snapshots[1], skillContextTriggerContextRetryRebuild)
 	}
 }
+
+// emptyRespProvider returns empty content and no tool calls — exercises the
+// DefaultResponse substitution for ordinary (non-speculative) turns.
+type emptyRespProvider struct{}
+
+func (p *emptyRespProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	return &providers.LLMResponse{Content: "", FinishReason: "stop"}, nil
+}
+
+func (p *emptyRespProvider) GetDefaultModel() string { return "empty-model" }
+
+// TestRunTurn_SpeculativeToolCall_SurfacesEmptyNotDefaultResponse guards the
+// voice empty-reply fix (2026-06-26). A speculative turn whose model requests a
+// tool aborts WITHOUT executing the tool, and the empty content MUST survive to
+// the caller — turn_coord must NOT substitute DefaultResponse for it. Otherwise
+// the bridge's preemptive coordinator sees a non-empty reply, commits the
+// speculation, and SPEAKS "The model returned an empty response" instead of
+// falling back to a normal tool-executing turn.
+func TestRunTurn_SpeculativeToolCall_SurfacesEmptyNotDefaultResponse(t *testing.T) {
+	provider := &toolCallRespProvider{
+		toolName: "web_search",
+		toolArgs: map[string]any{"query": "anything new here"},
+		response: "MUST NOT be used (tool must not run in a speculation)",
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-spec")
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-spec",
+		context: newTurnContext(nil, nil, nil),
+	})
+	ts.speculative = true
+	ts.speculationID = "spec_test"
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.finalContent != "" {
+		t.Fatalf("speculative tool-call turn must surface EMPTY content (so the bridge "+
+			"falls back to a normal turn); got %q", result.finalContent)
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("speculative turn must abort BEFORE tool execution (no second LLM call); "+
+			"provider.callCount = %d, want 1", provider.callCount)
+	}
+}
+
+// TestRunTurn_NonSpeculativeEmpty_UsesDefaultResponse ensures the fix is scoped:
+// ordinary turns that come back empty still get the DefaultResponse sentinel.
+func TestRunTurn_NonSpeculativeEmpty_UsesDefaultResponse(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &emptyRespProvider{})
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-empty")
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-empty",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.finalContent != opts.DefaultResponse {
+		t.Fatalf("non-speculative empty turn must use DefaultResponse; got %q, want %q",
+			result.finalContent, opts.DefaultResponse)
+	}
+}
+
+// TestRunTurn_SpeculativeToolCall_PublishesEmptyTerminal guards the second half
+// of the voice fix (2026-06-26): an empty speculative turn must still publish a
+// terminal (final, empty-content) outbound, or the bridge's SendSpeculativeTurn
+// blocks until request timeout (visitor hears thinking-chimes then silence and
+// never gets the fallback reply). With AllowInterimPicoPublish set (the voice
+// path), Finalize emits that terminal.
+func TestRunTurn_SpeculativeToolCall_PublishesEmptyTerminal(t *testing.T) {
+	provider := &toolCallRespProvider{
+		toolName: "read_file",
+		toolArgs: map[string]any{"path": "x"},
+		response: "unused",
+	}
+	// Build the loop with a CONCRETE message bus so we can read OutboundChan
+	// (al.bus is the interfaces.MessageBus interface, which doesn't expose it).
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, provider)
+	defer al.Close()
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	// Drain the outbound channel concurrently — PublishOutbound is non-blocking
+	// (drops on backpressure), so a reader must be ready when Finalize publishes.
+	got := make(chan bus.OutboundMessage, 4)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case m := <-msgBus.OutboundChan():
+				select {
+				case got <- m:
+				default:
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	defer close(stop)
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-spec-pub")
+	opts.AllowInterimPicoPublish = true // voice path: terminal must be published
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-spec-pub",
+		context: newTurnContext(nil, nil, nil),
+	})
+	ts.speculative = true
+	ts.speculationID = "spec_pub"
+
+	if _, err := al.runTurn(context.Background(), ts, pipeline); err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+
+	select {
+	case m := <-got:
+		if m.Content != "" {
+			t.Fatalf("speculative-empty terminal must have empty content, got %q", m.Content)
+		}
+		if m.Context.Raw[metadataKeyOutboundKind] != outboundKindFinal {
+			t.Fatalf("speculative-empty terminal must be marked final (kind=%q), got %q",
+				outboundKindFinal, m.Context.Raw[metadataKeyOutboundKind])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("speculative-empty turn must publish a terminal outbound so the bridge " +
+			"unblocks and falls back; none was published")
+	}
+}

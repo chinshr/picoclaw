@@ -89,6 +89,24 @@ func (p *Pipeline) Finalize(
 		markFinalOutbound(&msg)
 		_ = al.bus.PublishOutbound(turnCtx, msg)
 	}
+	// Speculative turns that end EMPTY (the model requested a tool, which a
+	// speculation never executes — pipeline_llm aborts before tool exec) produce
+	// no content and, because the stream was cancelled, no terminal message. But
+	// the bridge's SendSpeculativeTurn resolves only on a terminal message.create
+	// (or error). Without one it blocks until the request timeout — the visitor
+	// hears thinking-chimes then silence, and the bridge never falls back to a
+	// normal tool-executing turn. Emit an explicit EMPTY terminal so the bridge
+	// resolves immediately, sees empty content, aborts the speculation (reverting
+	// history), and re-runs the turn normally. (Voice "no reply on tool turns"
+	// regression, fixed 2026-06-26.)
+	if ts.speculative && finalContent == "" && !ts.opts.SendResponse && ts.opts.AllowInterimPicoPublish {
+		msg := outboundMessageForTurnWithOptions(ts, "", outboundTurnMessageOptions{
+			modelName: exec.llmModelName,
+		})
+		msg.ContextUsage = contextUsage
+		markFinalOutbound(&msg)
+		_ = al.bus.PublishOutbound(turnCtx, msg)
+	}
 	if streamErr != nil && isConfiguredStreamingVisibleError(streamErr) {
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{

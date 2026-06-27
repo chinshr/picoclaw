@@ -617,10 +617,11 @@ func (p *Pipeline) CallLLM(
 	// its pre-turn length. So we deliberately do NOT touch history or the
 	// speculation entry here (the manager's abort needs the entry to revert the
 	// user message persisted at setup); we just stop before any tool runs.
-	// TODO(build): (1) confirm ControlBreak with empty finalContent is the
-	// correct early terminal before tool execution; (2) ensure a terminal
-	// message.create (even empty) is emitted so the bridge's SendSpeculativeTurn
-	// unblocks promptly instead of waiting for timeout.
+	// turn_coord MUST NOT substitute DefaultResponse for this empty finalContent
+	// — it is guarded there by !ts.speculative. Otherwise the bridge sees a
+	// non-empty reply ("The model returned an empty response"), commits the
+	// speculation, and SPEAKS the error instead of falling back to a normal
+	// tool-executing turn. (Root cause of voice empty-reply bug, fixed 2026-06-26.)
 	if ts.speculative {
 		cancelConfiguredStreamingLLM(turnCtx, exec)
 		exec.finalContent = ""

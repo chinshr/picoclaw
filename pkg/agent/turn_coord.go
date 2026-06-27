@@ -215,8 +215,17 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				turnStatus = TurnEndStatusError
 				return turnResult{}, fmt.Errorf("hook requested turn abort")
 			}
-			// Ensure empty response falls back to DefaultResponse
-			if finalContent == "" {
+			// Ensure empty response falls back to DefaultResponse — EXCEPT for
+			// speculative turns. A speculation that ends empty (the common case:
+			// the model requested a tool, which speculations never execute, so
+			// pipeline_llm aborts before tool exec — see ControlBreak there) MUST
+			// surface empty content to the bridge. The bridge's preemptive
+			// coordinator treats empty as "speculation failed", aborts it
+			// (reverting history), and falls back to a normal tool-executing turn.
+			// Substituting DefaultResponse here made the bridge see a non-empty
+			// reply, commit it, and SPEAK the error string ("The model returned an
+			// empty response") on every tool-needing voice turn.
+			if finalContent == "" && !ts.speculative {
 				finalContent = ts.opts.DefaultResponse
 			}
 			result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
@@ -264,7 +273,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		return al.abortTurn(ts)
 	}
 
-	if finalContent == "" {
+	// Speculative turns must NOT substitute a fallback string for empty content
+	// (same reason as the ControlBreak path above): the bridge needs the empty to
+	// trigger its normal-turn fallback. Non-speculative turns keep the sentinels.
+	if finalContent == "" && !ts.speculative {
 		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
 			finalContent = toolLimitResponse
 		} else {
