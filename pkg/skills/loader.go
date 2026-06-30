@@ -28,6 +28,11 @@ const (
 type SkillMetadata struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Confirm marks a long-running, real-world action skill (e.g. watering the
+	// dog) that must be confirmed with the visitor before it runs. Surfaced to
+	// the model in the skill catalog; the prompt rule turns it into a
+	// "say what you'll do, wait for a yes" step. Set via frontmatter `confirm: true`.
+	Confirm bool `json:"confirm"`
 }
 
 type SkillInfo struct {
@@ -35,6 +40,7 @@ type SkillInfo struct {
 	Path        string `json:"path"`
 	Source      string `json:"source"`
 	Description string `json:"description"`
+	Confirm     bool   `json:"confirm"`
 }
 
 func (info SkillInfo) validate() error {
@@ -123,6 +129,7 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 			if metadata != nil {
 				info.Description = metadata.Description
 				info.Name = metadata.Name
+				info.Confirm = metadata.Confirm
 			}
 			if err := info.validate(); err != nil {
 				slog.Warn("invalid skill from "+source, "name", info.Name, "error", err)
@@ -210,6 +217,9 @@ func (sl *SkillsLoader) BuildSkillsSummary() string {
 		lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapedDesc))
 		lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapedPath))
 		lines = append(lines, fmt.Sprintf("    <source>%s</source>", s.Source))
+		if s.Confirm {
+			lines = append(lines, "    <confirm>true</confirm>")
+		}
 		lines = append(lines, "  </skill>")
 	}
 	lines = append(lines, "</skills>")
@@ -248,6 +258,7 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 	var jsonMeta struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Confirm     bool   `json:"confirm"`
 	}
 	if err := json.Unmarshal([]byte(frontmatter), &jsonMeta); err == nil {
 		if jsonMeta.Name != "" {
@@ -256,6 +267,7 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 		if jsonMeta.Description != "" {
 			metadata.Description = jsonMeta.Description
 		}
+		metadata.Confirm = jsonMeta.Confirm
 		return metadata
 	}
 
@@ -266,6 +278,9 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 	}
 	if description := yamlMeta["description"]; description != "" {
 		metadata.Description = description
+	}
+	if yamlMeta["confirm"] == "true" {
+		metadata.Confirm = true
 	}
 	return metadata
 }
@@ -331,6 +346,7 @@ func (sl *SkillsLoader) parseSimpleYAML(content string) map[string]string {
 	var meta struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
+		Confirm     bool   `yaml:"confirm"`
 	}
 	if err := yaml.Unmarshal([]byte(content), &meta); err != nil {
 		return result
@@ -340,6 +356,9 @@ func (sl *SkillsLoader) parseSimpleYAML(content string) map[string]string {
 	}
 	if meta.Description != "" {
 		result["description"] = meta.Description
+	}
+	if meta.Confirm {
+		result["confirm"] = "true"
 	}
 
 	return result

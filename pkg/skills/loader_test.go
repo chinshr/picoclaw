@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -145,6 +146,58 @@ func createSkillDir(t *testing.T, base, dirName, name, description string) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	content := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# " + name
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644))
+}
+
+// createSkillDirWithFrontmatter writes a SKILL.md with arbitrary extra YAML
+// frontmatter lines (e.g. "confirm: true") appended after name/description.
+func createSkillDirWithFrontmatter(t *testing.T, base, dirName, name, description string, extra ...string) {
+	t.Helper()
+	dir := filepath.Join(base, dirName)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	content := "---\nname: " + name + "\ndescription: " + description + "\n"
+	for _, line := range extra {
+		content += line + "\n"
+	}
+	content += "---\n\n# " + name
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644))
+}
+
+func TestListSkillsConfirmFlag(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+
+	createSkillDirWithFrontmatter(t, filepath.Join(ws, "skills"), "dog-water", "dog-water", "water the dog", "confirm: true")
+	createSkillDir(t, filepath.Join(ws, "skills"), "weather", "weather", "check the weather")
+
+	sl := NewSkillsLoader(ws, "", "")
+	skills := sl.ListSkills()
+
+	byName := make(map[string]SkillInfo, len(skills))
+	for _, s := range skills {
+		byName[s.Name] = s
+	}
+
+	require.Contains(t, byName, "dog-water")
+	require.Contains(t, byName, "weather")
+	assert.True(t, byName["dog-water"].Confirm, "confirm:true skill should be marked Confirm")
+	assert.False(t, byName["weather"].Confirm, "skill without confirm should default to false")
+}
+
+func TestBuildSkillsSummaryConfirmMarker(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+
+	createSkillDirWithFrontmatter(t, filepath.Join(ws, "skills"), "dog-water", "dog-water", "water the dog", "confirm: true")
+	createSkillDir(t, filepath.Join(ws, "skills"), "weather", "weather", "check the weather")
+
+	sl := NewSkillsLoader(ws, "", "")
+	summary := sl.BuildSkillsSummary()
+
+	assert.Contains(t, summary, "<confirm>true</confirm>",
+		"summary should surface the confirm marker for confirm:true skills")
+	// Exactly one <confirm> line — the non-confirm skill must not emit it.
+	assert.Equal(t, 1, strings.Count(summary, "<confirm>true</confirm>"),
+		"only the confirm:true skill should emit a <confirm> marker")
 }
 
 func TestListSkillsWorkspaceOverridesGlobal(t *testing.T) {

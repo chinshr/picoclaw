@@ -289,6 +289,13 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		if opts.IncludeToolUseRule && readFileAllowed {
 			skillIntro += " To use a skill, read its SKILL.md file using the read_file tool."
 		}
+		if strings.Contains(skillsSummary, "<confirm>true</confirm>") {
+			skillIntro += " A skill marked <confirm>true</confirm> is a long-running, real-world action" +
+				" (for example, watering the dog). Before running such a skill, first tell the visitor" +
+				" plainly what you are about to do and ask them to confirm, then STOP and wait for their" +
+				" reply. Only run the skill after they clearly say yes; if they decline or say anything" +
+				" else, do not run it. Skills without this marker run normally with no confirmation."
+		}
 		add(PromptPart{
 			ID:     "capability.skill_catalog",
 			Layer:  PromptLayerCapability,
@@ -454,6 +461,9 @@ func (cb *ContextBuilder) buildSkillsSummary(allowed []string) string {
 			fmt.Sprintf("    <location>%s</location>", xmlEscapeForPrompt(s.Path)),
 		)
 		lines = append(lines, fmt.Sprintf("    <source>%s</source>", xmlEscapeForPrompt(s.Source)))
+		if s.Confirm {
+			lines = append(lines, "    <confirm>true</confirm>")
+		}
 		lines = append(lines, "  </skill>")
 	}
 	if len(lines) == 1 {
