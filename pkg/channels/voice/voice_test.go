@@ -221,6 +221,115 @@ func TestBeginStream_SuppressedBetweenSentenceBoundaries(t *testing.T) {
 	}
 }
 
+func TestSplitThinking(t *testing.T) {
+	cases := []struct {
+		in, clean, thinking string
+	}{
+		{"Take any book home.", "Take any book home.", ""},
+		{"<think>they seem confused</think>Here you go.", "Here you go.", "they seem confused"},
+		{"<thinking>plan A</thinking>Hi.<thinking>plan B</thinking>", "Hi.", "plan Aplan B"},
+		// Unclosed span: fail-closed — everything after the tag is thinking.
+		{"Sure.<think>let me consider the shelf", "Sure.", "let me consider the shelf"},
+		// Case-insensitive, mixed open/close variants.
+		{"<THINKING>loud plan</think>Done deal.", "Done deal.", "loud plan"},
+		// Angle bracket that is not a thinking tag stays speakable.
+		{"Books < movies, honestly.", "Books < movies, honestly.", ""},
+	}
+	for _, c := range cases {
+		clean, thinking := splitThinking(c.in)
+		if clean != c.clean || thinking != c.thinking {
+			t.Fatalf("splitThinking(%q) = (%q, %q), want (%q, %q)",
+				c.in, clean, thinking, c.clean, c.thinking)
+		}
+	}
+}
+
+// Content-embedded thinking must stream out as kind:thought (dropped by the
+// bridge), never as speakable content — the 2026-07-06 CoT leak spoke twelve
+// planning lines at a shelf visitor because they arrived as plain content.
+func TestBeginStream_ThinkingSpansRoutedToThoughtKind(t *testing.T) {
+	ch := newTestVoiceChannel(t)
+	ch.config.Streaming = config.StreamingConfig{
+		Enabled:         true,
+		ThrottleSeconds: 60,
+		MinGrowthChars:  1000,
+	}
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	clientConn, received, cleanup := newTestVoiceWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
+
+	streamer, err := ch.BeginStream(context.Background(), "voice:sess-1")
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+
+	// Mid-thought (unclosed tag): only a thought frame may go out.
+	if err := streamer.Update(context.Background(), "<thinking>They seem confused."); err != nil {
+		t.Fatalf("Update(thinking) error = %v", err)
+	}
+	thought := mustReceiveVoiceMessage(t, received)
+	if thought.Type != TypeMessageCreate {
+		t.Fatalf("thought type = %q, want %q", thought.Type, TypeMessageCreate)
+	}
+	if got := thought.Payload[PayloadKeyKind]; got != MessageKindThought {
+		t.Fatalf("thought kind = %#v, want %q", got, MessageKindThought)
+	}
+	assertNoVoiceMessage(t, received)
+
+	// Thought closes, reply arrives: the content frame carries ONLY the reply.
+	full := "<thinking>They seem confused.</thinking>Take any book you like."
+	if err := streamer.Update(context.Background(), full); err != nil {
+		t.Fatalf("Update(reply) error = %v", err)
+	}
+	reply := mustReceiveVoiceMessage(t, received)
+	if reply.Type != TypeMessageCreate {
+		t.Fatalf("reply type = %q, want %q", reply.Type, TypeMessageCreate)
+	}
+	if got := reply.Payload[PayloadKeyContent]; got != "Take any book you like." {
+		t.Fatalf("reply content = %#v, want clean text only", got)
+	}
+	if got := reply.Payload[PayloadKeyKind]; got != nil {
+		t.Fatalf("reply kind = %#v, want unset", got)
+	}
+}
+
+// The non-streaming Send fallback gets the same hygiene.
+func TestSend_StripsThinking(t *testing.T) {
+	ch := newTestVoiceChannel(t)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	clientConn, received, cleanup := newTestVoiceWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&voiceConn{id: "conn-3", conn: clientConn, sessionID: "sess-3"})
+
+	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "voice:sess-3",
+		Content: "<think>keep it short</think>Take any book home.",
+	}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	thought := mustReceiveVoiceMessage(t, received)
+	if got := thought.Payload[PayloadKeyKind]; got != MessageKindThought {
+		t.Fatalf("first frame kind = %#v, want %q (thought precedes reply)", got, MessageKindThought)
+	}
+	reply := mustReceiveVoiceMessage(t, received)
+	if got := reply.Payload[PayloadKeyContent]; got != "Take any book home." {
+		t.Fatalf("reply content = %#v, want stripped text", got)
+	}
+	if final, _ := reply.Payload[PayloadKeyFinal].(bool); !final {
+		t.Fatalf("reply final = %#v, want true", reply.Payload[PayloadKeyFinal])
+	}
+}
+
 func TestBeginStream_DisabledWhenSentenceFlushOff(t *testing.T) {
 	ch := newTestVoiceChannel(t)
 	off := false

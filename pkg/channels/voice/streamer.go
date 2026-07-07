@@ -46,6 +46,66 @@ type voiceStreamer struct {
 // Newlines also act as a flush boundary — paragraph breaks are natural seams.
 const sentenceEnders = ".!?。！？\n"
 
+// Thinking-span tags. Some models emit their deliberation inside the CONTENT
+// stream instead of the provider's reasoning channel — either as DeepSeek-style
+// <think> blocks or as prompted <thinking> blocks. Spoken at a shelf visitor,
+// that is a chain-of-thought leak (field 2026-07-06: twelve planning lines
+// played aloud). splitThinking reroutes those spans to the reasoning track
+// (kind:thought), which downstream voice clients (the library-claw bridge)
+// already drop.
+var thinkingOpenTags = []string{"<thinking>", "<think>"}
+var thinkingCloseTags = []string{"</thinking>", "</think>"}
+
+// splitThinking removes <think>/<thinking> spans from accumulated content,
+// returning the speakable remainder and the concatenated thinking text.
+// An UNCLOSED opening tag swallows the rest of the string into thinking —
+// fail-closed: while the model is mid-thought (or forgets the close tag),
+// nothing of the span can reach TTS. Because the streamer always receives the
+// full accumulated content, this is stateless and re-parses per update; the
+// cleaned content still grows monotonically, so the sentence-flush watermark
+// (lastSentenceEnd) stays valid. Tags match case-insensitively and open/close
+// variants may mix.
+func splitThinking(content string) (clean string, thinking string) {
+	if !strings.Contains(content, "<") {
+		return content, ""
+	}
+	var cleanB, thinkB strings.Builder
+	rest := content
+	for {
+		lower := strings.ToLower(rest)
+		open := -1
+		openLen := 0
+		for _, tag := range thinkingOpenTags {
+			if i := strings.Index(lower, tag); i >= 0 && (open < 0 || i < open) {
+				open = i
+				openLen = len(tag)
+			}
+		}
+		if open < 0 {
+			cleanB.WriteString(rest)
+			break
+		}
+		cleanB.WriteString(rest[:open])
+		rest = rest[open+openLen:]
+		lower = strings.ToLower(rest)
+		closeAt := -1
+		closeLen := 0
+		for _, tag := range thinkingCloseTags {
+			if i := strings.Index(lower, tag); i >= 0 && (closeAt < 0 || i < closeAt) {
+				closeAt = i
+				closeLen = len(tag)
+			}
+		}
+		if closeAt < 0 {
+			thinkB.WriteString(rest) // unclosed: hold everything back
+			break
+		}
+		thinkB.WriteString(rest[:closeAt])
+		rest = rest[closeAt+closeLen:]
+	}
+	return strings.TrimSpace(cleanB.String()), strings.TrimSpace(thinkB.String())
+}
+
 // lastSentenceEndIndex returns the rune index of the last sentence-ending
 // character in content (counting in runes, not bytes). Returns -1 if none.
 //
@@ -120,6 +180,17 @@ func (s *voiceStreamer) updateLocked(
 	if s == nil || s.channel == nil {
 		return fmt.Errorf("voice streamer not initialized")
 	}
+
+	// Content-embedded thinking (<think>/<thinking> spans) must never reach
+	// TTS: reroute it to the reasoning track (kind:thought — dropped by the
+	// bridge) and continue with the speakable remainder only.
+	if clean, thinking := splitThinking(content); thinking != "" {
+		content = clean
+		if err := s.updateReasoningLocked(ctx, thinking, final); err != nil {
+			return err
+		}
+	}
+
 	if strings.TrimSpace(content) == "" && s.messageID == "" && !final {
 		return nil
 	}

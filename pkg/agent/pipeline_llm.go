@@ -565,7 +565,14 @@ func (p *Pipeline) CallLLM(
 	// No-tool-call path: steering check and direct response
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
 		responseContent := exec.response.Content
-		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
+		// Reasoning-as-fallback is a chat-channel convenience (better to show
+		// the trace than nothing). It must NOT apply to voice: the voice
+		// channel SPEAKS content at a shelf visitor, and a promoted reasoning
+		// trace is a verbatim chain-of-thought leak (field 2026-07-06). An
+		// empty voice reply is handled downstream (bridge fallback text /
+		// undelivered reporting), which is strictly better than spoken CoT.
+		if responseContent == "" && exec.response.ReasoningContent != "" &&
+			ts.channel != "pico" && ts.channel != "voice" {
 			responseContent = exec.response.ReasoningContent
 		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {

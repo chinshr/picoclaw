@@ -154,9 +154,24 @@ func (c *VoiceChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 		return nil, channels.ErrNotRunning
 	}
 
+	// Non-streaming path gets the same thinking hygiene as the streamer:
+	// content-embedded <think>/<thinking> spans are stripped, and forwarded
+	// (once, complete) as a kind:thought frame so nothing deliberative can
+	// reach TTS while the trace stays observable.
+	speakable := msg.Content
+	if clean, thinking := splitThinking(msg.Content); thinking != "" {
+		speakable = clean
+		thoughtMsg := newMessage(TypeMessageCreate, map[string]any{
+			PayloadKeyContent: thinking,
+			"message_id":      uuid.New().String(),
+			PayloadKeyKind:    MessageKindThought,
+		})
+		_ = c.broadcastToSession(msg.ChatID, thoughtMsg)
+	}
+
 	msgID := uuid.New().String()
 	payload := map[string]any{
-		PayloadKeyContent: msg.Content,
+		PayloadKeyContent: speakable,
 		"message_id":      msgID,
 		// Send delivers a complete reply in a single frame (used by the
 		// non-streaming Chat fallback when ChatStream fails before visible
