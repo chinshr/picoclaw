@@ -1,4 +1,4 @@
-package voice
+package voicebridge
 
 import (
 	"context"
@@ -15,38 +15,38 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
-func newTestVoiceChannel(t *testing.T) *VoiceChannel {
+func newTestVoiceBridgeChannel(t *testing.T) *VoiceBridgeChannel {
 	t.Helper()
 
-	bc := &config.Channel{Type: config.ChannelVoice, Enabled: true}
-	cfg := &config.VoiceSettings{}
+	bc := &config.Channel{Type: config.ChannelVoiceBridge, Enabled: true}
+	cfg := &config.VoiceBridgeSettings{}
 	cfg.SetToken("test-token")
-	ch, err := NewVoiceChannel(bc, cfg, bus.NewMessageBus())
+	ch, err := NewVoiceBridgeChannel(bc, cfg, bus.NewMessageBus())
 	if err != nil {
-		t.Fatalf("NewVoiceChannel: %v", err)
+		t.Fatalf("NewVoiceBridgeChannel: %v", err)
 	}
 
 	ch.ctx = context.Background()
 	return ch
 }
 
-func TestNewVoiceChannel_RequiresToken(t *testing.T) {
-	bc := &config.Channel{Type: config.ChannelVoice, Enabled: true}
-	cfg := &config.VoiceSettings{}
-	if _, err := NewVoiceChannel(bc, cfg, bus.NewMessageBus()); err == nil {
+func TestNewVoiceBridgeChannel_RequiresToken(t *testing.T) {
+	bc := &config.Channel{Type: config.ChannelVoiceBridge, Enabled: true}
+	cfg := &config.VoiceBridgeSettings{}
+	if _, err := NewVoiceBridgeChannel(bc, cfg, bus.NewMessageBus()); err == nil {
 		t.Fatal("expected error when token is empty")
 	}
 }
 
 func TestWebhookPath(t *testing.T) {
-	ch := newTestVoiceChannel(t)
-	if got := ch.WebhookPath(); got != "/voice/" {
-		t.Fatalf("WebhookPath() = %q, want %q", got, "/voice/")
+	ch := newTestVoiceBridgeChannel(t)
+	if got := ch.WebhookPath(); got != "/voice_bridge/" {
+		t.Fatalf("WebhookPath() = %q, want %q", got, "/voice_bridge/")
 	}
 }
 
 func TestBroadcastToSession_StripsVoicePrefix(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	if err := ch.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -57,7 +57,7 @@ func TestBroadcastToSession_StripsVoicePrefix(t *testing.T) {
 	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
 
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "voice:sess-1",
+		ChatID:  "voice_bridge:sess-1",
 		Content: "hi",
 	}); err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -73,8 +73,8 @@ func TestBroadcastToSession_StripsVoicePrefix(t *testing.T) {
 }
 
 // TestSend_MarksFrameAsFinal protects against a regression where the
-// non-streaming Send path emitted a ``message.create`` without
-// ``payload.final == true``. Streaming-aware consumers (e.g. the
+// non-streaming Send path emitted a “message.create“ without
+// “payload.final == true“. Streaming-aware consumers (e.g. the
 // library-claw bridge) wait for that flag before resolving the turn — if
 // it's missing they buffer the content as an in-progress streaming chunk
 // and hang waiting for a terminal frame that never arrives. This bites
@@ -82,7 +82,7 @@ func TestBroadcastToSession_StripsVoicePrefix(t *testing.T) {
 // 429), because the fallback delivers its single reply via bus.Publish ->
 // channel.Send instead of through the streamer.
 func TestSend_MarksFrameAsFinal(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	if err := ch.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSend_MarksFrameAsFinal(t *testing.T) {
 	ch.addConnForTest(&voiceConn{id: "conn-2", conn: clientConn, sessionID: "sess-2"})
 
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "voice:sess-2",
+		ChatID:  "voice_bridge:sess-2",
 		Content: "Go ahead — I'm listening.",
 	}); err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -119,7 +119,7 @@ func TestSend_MarksFrameAsFinal(t *testing.T) {
 // the voice streamer: as soon as a sentence-ender appears in the streaming
 // content, the streamer should flush regardless of the throttle window.
 func TestBeginStream_FlushesOnSentenceBoundary(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	// Use a very large throttle so that without sentence-flush the second
 	// update would be suppressed. With sentence-flush, the period in
 	// "Hello world." forces it out anyway.
@@ -137,7 +137,7 @@ func TestBeginStream_FlushesOnSentenceBoundary(t *testing.T) {
 	defer cleanup()
 	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
 
-	streamer, err := ch.BeginStream(context.Background(), "voice:sess-1")
+	streamer, err := ch.BeginStream(context.Background(), "voice_bridge:sess-1")
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBeginStream_FlushesOnSentenceBoundary(t *testing.T) {
 // path: when no new sentence-ender is present, the streamer still respects
 // the throttle window — i.e. it doesn't accidentally flush every update.
 func TestBeginStream_SuppressedBetweenSentenceBoundaries(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	ch.config.Streaming = config.StreamingConfig{
 		Enabled:         true,
 		ThrottleSeconds: 60,
@@ -190,7 +190,7 @@ func TestBeginStream_SuppressedBetweenSentenceBoundaries(t *testing.T) {
 	defer cleanup()
 	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
 
-	streamer, err := ch.BeginStream(context.Background(), "voice:sess-1")
+	streamer, err := ch.BeginStream(context.Background(), "voice_bridge:sess-1")
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSplitThinking(t *testing.T) {
 // bridge), never as speakable content — the 2026-07-06 CoT leak spoke twelve
 // planning lines at a shelf visitor because they arrived as plain content.
 func TestBeginStream_ThinkingSpansRoutedToThoughtKind(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	ch.config.Streaming = config.StreamingConfig{
 		Enabled:         true,
 		ThrottleSeconds: 60,
@@ -263,7 +263,7 @@ func TestBeginStream_ThinkingSpansRoutedToThoughtKind(t *testing.T) {
 	defer cleanup()
 	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
 
-	streamer, err := ch.BeginStream(context.Background(), "voice:sess-1")
+	streamer, err := ch.BeginStream(context.Background(), "voice_bridge:sess-1")
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -300,7 +300,7 @@ func TestBeginStream_ThinkingSpansRoutedToThoughtKind(t *testing.T) {
 
 // The non-streaming Send fallback gets the same hygiene.
 func TestSend_StripsThinking(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	if err := ch.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -311,7 +311,7 @@ func TestSend_StripsThinking(t *testing.T) {
 	ch.addConnForTest(&voiceConn{id: "conn-3", conn: clientConn, sessionID: "sess-3"})
 
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "voice:sess-3",
+		ChatID:  "voice_bridge:sess-3",
 		Content: "<think>keep it short</think>Take any book home.",
 	}); err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -331,7 +331,7 @@ func TestSend_StripsThinking(t *testing.T) {
 }
 
 func TestBeginStream_DisabledWhenSentenceFlushOff(t *testing.T) {
-	ch := newTestVoiceChannel(t)
+	ch := newTestVoiceBridgeChannel(t)
 	off := false
 	ch.config.SentenceFlush = &off
 	ch.config.Streaming = config.StreamingConfig{
@@ -348,7 +348,7 @@ func TestBeginStream_DisabledWhenSentenceFlushOff(t *testing.T) {
 	defer cleanup()
 	ch.addConnForTest(&voiceConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
 
-	streamer, err := ch.BeginStream(context.Background(), "voice:sess-1")
+	streamer, err := ch.BeginStream(context.Background(), "voice_bridge:sess-1")
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -407,7 +407,7 @@ func assertNoVoiceMessage(t *testing.T, received <-chan VoiceMessage) {
 
 // addConnForTest registers a test-built voiceConn directly into the channel's
 // connection indexes, bypassing the WebSocket upgrade dance.
-func (c *VoiceChannel) addConnForTest(vc *voiceConn) {
+func (c *VoiceBridgeChannel) addConnForTest(vc *voiceConn) {
 	c.connsMu.Lock()
 	defer c.connsMu.Unlock()
 	if c.connections == nil {

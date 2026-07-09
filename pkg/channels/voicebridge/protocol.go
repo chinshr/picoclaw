@@ -1,11 +1,11 @@
-package voice
+package voicebridge
 
 import "time"
 
 // Protocol message types. The wire format intentionally mirrors the Pico
 // Protocol so that bridge/edge tooling that already speaks the Pico envelope
 // can talk to the voice channel with only a different webhook path. The
-// channel-tag in the envelope ("voice") is what differentiates the two on the
+// channel-tag in the envelope ("voice_bridge") is what differentiates the two on the
 // wire, alongside the path the client connects to.
 const (
 	// Inbound (client → server).
@@ -13,7 +13,7 @@ const (
 	TypePing        = "ping"
 
 	// Speculative turns (docs/design/speculative-turns.md). The bridge connects
-	// to THIS channel (/voice/ws), so the speculative protocol lives here.
+	// to THIS channel (/voice_bridge/ws), so the speculative protocol lives here.
 	TypeTurnCommit = "turn.commit"
 	TypeTurnAbort  = "turn.abort"
 

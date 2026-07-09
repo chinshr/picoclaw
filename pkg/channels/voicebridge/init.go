@@ -1,4 +1,4 @@
-package voice
+package voicebridge
 
 import (
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -8,18 +8,18 @@ import (
 
 func init() {
 	channels.RegisterFactory(
-		config.ChannelVoice,
+		config.ChannelVoiceBridge,
 		func(channelName, channelType string, cfg *config.Config, b *bus.MessageBus) (channels.Channel, error) {
 			bc := cfg.Channels[channelName]
 			decoded, err := bc.GetDecoded()
 			if err != nil {
 				return nil, err
 			}
-			c, ok := decoded.(*config.VoiceSettings)
+			c, ok := decoded.(*config.VoiceBridgeSettings)
 			if !ok {
 				return nil, channels.ErrSendFailed
 			}
-			return NewVoiceChannel(bc, c, b)
+			return NewVoiceBridgeChannel(bc, c, b)
 		},
 	)
 }

@@ -1,4 +1,4 @@
-package voice
+package voicebridge
 
 import (
 	"context"
@@ -50,14 +50,14 @@ func (vc *voiceConn) close() {
 	}
 }
 
-// VoiceChannel is a WebSocket channel modeled on PicoChannel and tuned for
+// VoiceBridgeChannel is a WebSocket channel modeled on PicoChannel and tuned for
 // streaming partial LLM utterances to a downstream device (e.g. edge) that
 // performs TTS playback. It implements channels.StreamingCapable; the streamer
 // returned from BeginStream flushes early on sentence boundaries.
-type VoiceChannel struct {
+type VoiceBridgeChannel struct {
 	*channels.BaseChannel
 	bc                 *config.Channel
-	config             *config.VoiceSettings
+	config             *config.VoiceBridgeSettings
 	upgrader           websocket.Upgrader
 	connections        map[string]*voiceConn            // connID -> *voiceConn
 	sessionConnections map[string]map[string]*voiceConn // sessionID -> connID -> *voiceConn
@@ -66,17 +66,17 @@ type VoiceChannel struct {
 	cancel             context.CancelFunc
 }
 
-// NewVoiceChannel builds a new voice channel from validated settings.
-func NewVoiceChannel(
+// NewVoiceBridgeChannel builds a new voice channel from validated settings.
+func NewVoiceBridgeChannel(
 	bc *config.Channel,
-	cfg *config.VoiceSettings,
+	cfg *config.VoiceBridgeSettings,
 	messageBus *bus.MessageBus,
-) (*VoiceChannel, error) {
+) (*VoiceBridgeChannel, error) {
 	if cfg.Token.String() == "" {
-		return nil, fmt.Errorf("voice token is required")
+		return nil, fmt.Errorf("voice_bridge token is required")
 	}
 
-	base := channels.NewBaseChannel("voice", cfg, messageBus, bc.AllowFrom)
+	base := channels.NewBaseChannel("voice_bridge", cfg, messageBus, bc.AllowFrom)
 
 	allowOrigins := cfg.AllowOrigins
 	checkOrigin := func(r *http.Request) bool {
@@ -92,7 +92,7 @@ func NewVoiceChannel(
 		return false
 	}
 
-	ch := &VoiceChannel{
+	ch := &VoiceBridgeChannel{
 		BaseChannel: base,
 		bc:          bc,
 		config:      cfg,
@@ -108,7 +108,7 @@ func NewVoiceChannel(
 }
 
 // Start implements channels.Channel.
-func (c *VoiceChannel) Start(ctx context.Context) error {
+func (c *VoiceBridgeChannel) Start(ctx context.Context) error {
 	logger.InfoC("voice", "Starting voice channel")
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.SetRunning(true)
@@ -117,7 +117,7 @@ func (c *VoiceChannel) Start(ctx context.Context) error {
 }
 
 // Stop implements channels.Channel.
-func (c *VoiceChannel) Stop(ctx context.Context) error {
+func (c *VoiceBridgeChannel) Stop(ctx context.Context) error {
 	logger.InfoC("voice", "Stopping voice channel")
 	c.SetRunning(false)
 
@@ -135,11 +135,11 @@ func (c *VoiceChannel) Stop(ctx context.Context) error {
 
 // WebhookPath implements channels.WebhookHandler. The voice channel sits at
 // /voice/ so it can coexist with the pico channel on the same HTTP server.
-func (c *VoiceChannel) WebhookPath() string { return "/voice/" }
+func (c *VoiceBridgeChannel) WebhookPath() string { return "/voice_bridge/" }
 
 // ServeHTTP implements http.Handler.
-func (c *VoiceChannel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/voice")
+func (c *VoiceBridgeChannel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/voice_bridge")
 	switch path {
 	case "/ws", "/ws/":
 		c.handleWebSocket(w, r)
@@ -149,7 +149,7 @@ func (c *VoiceChannel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Send implements channels.Channel.
-func (c *VoiceChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+func (c *VoiceBridgeChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
@@ -193,7 +193,7 @@ func (c *VoiceChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 }
 
 // EditMessage implements channels.MessageEditor.
-func (c *VoiceChannel) EditMessage(
+func (c *VoiceBridgeChannel) EditMessage(
 	ctx context.Context,
 	chatID string,
 	messageID string,
@@ -202,7 +202,7 @@ func (c *VoiceChannel) EditMessage(
 	return c.editMessage(ctx, chatID, messageID, content, nil, false)
 }
 
-func (c *VoiceChannel) editMessage(
+func (c *VoiceBridgeChannel) editMessage(
 	ctx context.Context,
 	chatID string,
 	messageID string,
@@ -223,7 +223,7 @@ func (c *VoiceChannel) editMessage(
 }
 
 // DeleteMessage implements channels.MessageDeleter.
-func (c *VoiceChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
+func (c *VoiceBridgeChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
 	outMsg := newMessage(TypeMessageDelete, map[string]any{
 		"message_id": messageID,
 	})
@@ -231,7 +231,7 @@ func (c *VoiceChannel) DeleteMessage(ctx context.Context, chatID string, message
 }
 
 // StartTyping implements channels.TypingCapable.
-func (c *VoiceChannel) StartTyping(ctx context.Context, chatID string) (func(), error) {
+func (c *VoiceBridgeChannel) StartTyping(ctx context.Context, chatID string) (func(), error) {
 	startMsg := newMessage(TypeTypingStart, nil)
 	if err := c.broadcastToSession(chatID, startMsg); err != nil {
 		return func() {}, err
@@ -243,7 +243,7 @@ func (c *VoiceChannel) StartTyping(ctx context.Context, chatID string) (func(), 
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.
-func (c *VoiceChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
+func (c *VoiceBridgeChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
 	if !c.bc.Placeholder.Enabled {
 		return "", nil
 	}
@@ -264,7 +264,7 @@ func (c *VoiceChannel) SendPlaceholder(ctx context.Context, chatID string) (stri
 
 // BeginStream implements channels.StreamingCapable. Returns a voiceStreamer
 // that flushes eagerly at sentence boundaries.
-func (c *VoiceChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
+func (c *VoiceBridgeChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
 	if c == nil || c.config == nil || !c.config.Streaming.Enabled {
 		return nil, fmt.Errorf("streaming disabled in config")
 	}
@@ -287,8 +287,8 @@ func (c *VoiceChannel) BeginStream(ctx context.Context, chatID string) (channels
 
 // broadcastToSession sends a message to every connection in the chatID's
 // session. Returns ErrSendFailed wrapped if no active connections accepted it.
-func (c *VoiceChannel) broadcastToSession(chatID string, msg VoiceMessage) error {
-	sessionID := strings.TrimPrefix(chatID, "voice:")
+func (c *VoiceBridgeChannel) broadcastToSession(chatID string, msg VoiceMessage) error {
+	sessionID := strings.TrimPrefix(chatID, "voice_bridge:")
 	msg.SessionID = sessionID
 
 	var sent bool
@@ -311,7 +311,7 @@ func (c *VoiceChannel) broadcastToSession(chatID string, msg VoiceMessage) error
 
 // createAndAddConnection registers a new connection, atomically enforcing the
 // MaxConnections limit.
-func (c *VoiceChannel) createAndAddConnection(
+func (c *VoiceBridgeChannel) createAndAddConnection(
 	conn *websocket.Conn,
 	sessionID string,
 	maxConns int,
@@ -347,7 +347,7 @@ func (c *VoiceChannel) createAndAddConnection(
 	return vc, nil
 }
 
-func (c *VoiceChannel) removeConnection(connID string) *voiceConn {
+func (c *VoiceBridgeChannel) removeConnection(connID string) *voiceConn {
 	c.connsMu.Lock()
 	defer c.connsMu.Unlock()
 
@@ -366,7 +366,7 @@ func (c *VoiceChannel) removeConnection(connID string) *voiceConn {
 	return vc
 }
 
-func (c *VoiceChannel) takeAllConnections() []*voiceConn {
+func (c *VoiceBridgeChannel) takeAllConnections() []*voiceConn {
 	c.connsMu.Lock()
 	defer c.connsMu.Unlock()
 
@@ -379,7 +379,7 @@ func (c *VoiceChannel) takeAllConnections() []*voiceConn {
 	return all
 }
 
-func (c *VoiceChannel) sessionConnectionsSnapshot(sessionID string) []*voiceConn {
+func (c *VoiceBridgeChannel) sessionConnectionsSnapshot(sessionID string) []*voiceConn {
 	c.connsMu.RLock()
 	defer c.connsMu.RUnlock()
 
@@ -394,13 +394,13 @@ func (c *VoiceChannel) sessionConnectionsSnapshot(sessionID string) []*voiceConn
 	return conns
 }
 
-func (c *VoiceChannel) currentConnCount() int {
+func (c *VoiceBridgeChannel) currentConnCount() int {
 	c.connsMu.RLock()
 	defer c.connsMu.RUnlock()
 	return len(c.connections)
 }
 
-func (c *VoiceChannel) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+func (c *VoiceBridgeChannel) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !c.IsRunning() {
 		http.Error(w, "channel not running", http.StatusServiceUnavailable)
 		return
@@ -461,7 +461,7 @@ func (c *VoiceChannel) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 //  1. Authorization: Bearer <token>
 //  2. Sec-WebSocket-Protocol "token.<value>" subprotocol
 //  3. ?token=<value> query string (only when AllowTokenQuery is on)
-func (c *VoiceChannel) authenticate(r *http.Request) bool {
+func (c *VoiceBridgeChannel) authenticate(r *http.Request) bool {
 	token := c.config.Token.String()
 	if token == "" {
 		return false
@@ -486,7 +486,7 @@ func (c *VoiceChannel) authenticate(r *http.Request) bool {
 	return false
 }
 
-func (c *VoiceChannel) matchedSubprotocol(r *http.Request) string {
+func (c *VoiceBridgeChannel) matchedSubprotocol(r *http.Request) string {
 	token := c.config.Token.String()
 	for _, proto := range websocket.Subprotocols(r) {
 		if after, ok := strings.CutPrefix(proto, "token."); ok && after == token {
@@ -496,7 +496,7 @@ func (c *VoiceChannel) matchedSubprotocol(r *http.Request) string {
 	return ""
 }
 
-func (c *VoiceChannel) readLoop(vc *voiceConn) {
+func (c *VoiceBridgeChannel) readLoop(vc *voiceConn) {
 	defer func() {
 		vc.close()
 		if removed := c.removeConnection(vc.id); removed != nil {
@@ -559,7 +559,7 @@ func (c *VoiceChannel) readLoop(vc *voiceConn) {
 	}
 }
 
-func (c *VoiceChannel) pingLoop(vc *voiceConn, interval time.Duration) {
+func (c *VoiceBridgeChannel) pingLoop(vc *voiceConn, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -580,7 +580,7 @@ func (c *VoiceChannel) pingLoop(vc *voiceConn, interval time.Duration) {
 	}
 }
 
-func (c *VoiceChannel) handleMessage(vc *voiceConn, msg VoiceMessage) {
+func (c *VoiceBridgeChannel) handleMessage(vc *voiceConn, msg VoiceMessage) {
 	switch msg.Type {
 	case TypePing:
 		pong := newMessage(TypePong, nil)
@@ -602,7 +602,7 @@ func (c *VoiceChannel) handleMessage(vc *voiceConn, msg VoiceMessage) {
 	}
 }
 
-func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
+func (c *VoiceBridgeChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 	content, _ := msg.Payload[PayloadKeyContent].(string)
 	if strings.TrimSpace(content) == "" {
 		errMsg := newError("empty_content", "message content is empty", map[string]any{
@@ -617,11 +617,11 @@ func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 		sessionID = vc.sessionID
 	}
 
-	chatID := "voice:" + sessionID
-	senderID := "voice-user"
+	chatID := "voice_bridge:" + sessionID
+	senderID := "voice-bridge-user"
 
 	metadata := map[string]string{
-		"platform":   "voice",
+		"platform":   "voice_bridge",
 		"session_id": sessionID,
 		"conn_id":    vc.id,
 	}
@@ -643,16 +643,16 @@ func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 	})
 
 	sender := bus.SenderInfo{
-		Platform:    "voice",
+		Platform:    "voice_bridge",
 		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("voice", senderID),
+		CanonicalID: identity.BuildCanonicalID("voice_bridge", senderID),
 	}
 	if !c.IsAllowedSender(sender) {
 		return
 	}
 
 	inboundCtx := bus.InboundContext{
-		Channel:   "voice",
+		Channel:   "voice_bridge",
 		ChatID:    chatID,
 		ChatType:  "direct",
 		SenderID:  senderID,
@@ -666,7 +666,7 @@ func (c *VoiceChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 // handleTurnControl forwards a speculative-turn commit/abort to the agent (the
 // session owner) as a zero-content control InboundMessage so the agent loop
 // intercepts it before running a turn (docs/design/speculative-turns.md).
-func (c *VoiceChannel) handleTurnControl(vc *voiceConn, msg VoiceMessage, control string) {
+func (c *VoiceBridgeChannel) handleTurnControl(vc *voiceConn, msg VoiceMessage, control string) {
 	specID, _ := msg.Payload[PayloadKeySpeculationID].(string)
 	if strings.TrimSpace(specID) == "" {
 		_ = vc.writeJSON(newError("missing_speculation_id",
@@ -677,22 +677,22 @@ func (c *VoiceChannel) handleTurnControl(vc *voiceConn, msg VoiceMessage, contro
 	if sessionID == "" {
 		sessionID = vc.sessionID
 	}
-	chatID := "voice:" + sessionID
-	senderID := "voice-user"
+	chatID := "voice_bridge:" + sessionID
+	senderID := "voice-bridge-user"
 	sender := bus.SenderInfo{
-		Platform:    "voice",
+		Platform:    "voice_bridge",
 		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("voice", senderID),
+		CanonicalID: identity.BuildCanonicalID("voice_bridge", senderID),
 	}
 	ctrlMsg := bus.InboundMessage{
 		Context: bus.InboundContext{
-			Channel:   "voice",
+			Channel:   "voice_bridge",
 			ChatID:    chatID,
 			ChatType:  "direct",
 			SenderID:  senderID,
 			MessageID: msg.ID,
 			Raw: map[string]string{
-				"platform":              "voice",
+				"platform":              "voice_bridge",
 				"session_id":            sessionID,
 				bus.RawKeyControl:       control,
 				bus.RawKeySpeculationID: specID,

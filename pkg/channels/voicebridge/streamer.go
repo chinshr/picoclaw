@@ -1,4 +1,4 @@
-package voice
+package voicebridge
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 // Between sentence boundaries the streamer still honors throttleInterval and
 // minGrowth, so we don't spam the wire with single-token updates.
 type voiceStreamer struct {
-	channel          *VoiceChannel
+	channel          *VoiceBridgeChannel
 	chatID           string
 	messageID        string
 	reasoningID      string
@@ -178,7 +178,7 @@ func (s *voiceStreamer) updateLocked(
 	contextUsage *bus.ContextUsage,
 ) error {
 	if s == nil || s.channel == nil {
-		return fmt.Errorf("voice streamer not initialized")
+		return fmt.Errorf("voice_bridge streamer not initialized")
 	}
 
 	// Content-embedded thinking (<think>/<thinking> spans) must never reach
@@ -265,7 +265,7 @@ func (s *voiceStreamer) updateReasoningLocked(
 	final bool,
 ) error {
 	if s == nil || s.channel == nil {
-		return fmt.Errorf("voice streamer not initialized")
+		return fmt.Errorf("voice_bridge streamer not initialized")
 	}
 	if strings.TrimSpace(content) == "" && s.reasoningID == "" {
 		return nil

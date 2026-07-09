@@ -667,12 +667,12 @@ type PicoClientSettings struct {
 	ReadTimeout  int          `json:"read_timeout,omitempty"  yaml:"-"`
 }
 
-// VoiceSettings configures the WebSocket "voice" channel. The transport mirrors
+// VoiceBridgeSettings configures the WebSocket "voice_bridge" channel. The transport mirrors
 // the Pico channel (so the bridge/edge wiring stays simple), but the channel is
 // tuned for streaming partial LLM utterances out to a downstream edge device
 // that does TTS playback as soon as a sentence is ready.
-type VoiceSettings struct {
-	Token           SecureString    `json:"token,omitzero"              yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_VOICE_TOKEN"`
+type VoiceBridgeSettings struct {
+	Token           SecureString    `json:"token,omitzero"              yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_VOICE_BRIDGE_TOKEN"`
 	AllowTokenQuery bool            `json:"allow_token_query,omitempty" yaml:"-"`
 	AllowOrigins    []string        `json:"allow_origins,omitempty"     yaml:"-"`
 	Streaming       StreamingConfig `json:"streaming,omitzero"          yaml:"-"`
@@ -689,14 +689,14 @@ type VoiceSettings struct {
 }
 
 // SetToken sets the Voice token and marks it as dirty for security saving.
-func (c *VoiceSettings) SetToken(token string) {
+func (c *VoiceBridgeSettings) SetToken(token string) {
 	c.Token = *NewSecureString(token)
 }
 
 // SentenceFlushEnabled reports whether the sentence-boundary flush is active.
 // Defaults to true when unset, matching the channel's design goal of letting
 // edge TTS start as early as possible.
-func (c *VoiceSettings) SentenceFlushEnabled() bool {
+func (c *VoiceBridgeSettings) SentenceFlushEnabled() bool {
 	if c.SentenceFlush == nil {
 		return true
 	}

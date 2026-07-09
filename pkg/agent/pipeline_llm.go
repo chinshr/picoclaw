@@ -572,7 +572,7 @@ func (p *Pipeline) CallLLM(
 		// empty voice reply is handled downstream (bridge fallback text /
 		// undelivered reporting), which is strictly better than spoken CoT.
 		if responseContent == "" && exec.response.ReasoningContent != "" &&
-			ts.channel != "pico" && ts.channel != "voice" {
+			ts.channel != "pico" && ts.channel != "voice_bridge" {
 			responseContent = exec.response.ReasoningContent
 		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
