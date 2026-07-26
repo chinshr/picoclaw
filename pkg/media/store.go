@@ -70,8 +70,9 @@ type MediaCleanerConfig struct {
 	Interval time.Duration
 }
 
-// FileMediaStore is a pure in-memory implementation of MediaStore.
-// Files are expected to already exist on disk (e.g. in /tmp/picoclaw_media/).
+// FileMediaStore maps refs to files that already exist on disk (e.g. in
+// TempDir()). The ref map is in memory; call EnablePersistence to also mirror
+// it to disk so refs survive a restart.
 type FileMediaStore struct {
 	mu          sync.RWMutex
 	refs        map[string]mediaEntry
@@ -79,6 +80,10 @@ type FileMediaStore struct {
 	refToScope  map[string]string
 	refToPath   map[string]string
 	pathStates  map[string]pathRefState
+
+	// indexPath, when set via EnablePersistence, is the on-disk mirror of the
+	// ref map (see persist.go). Empty means memory-only.
+	indexPath string
 
 	cleanerCfg MediaCleanerConfig
 	stop       chan struct{}
@@ -144,6 +149,8 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	pathState.refCount++
 	s.pathStates[localPath] = pathState
 
+	s.persistLocked()
+
 	return ref, nil
 }
 
@@ -196,6 +203,7 @@ func (s *FileMediaStore) ReleaseAll(scope string) error {
 		}
 	}
 	delete(s.scopeToRefs, scope)
+	s.persistLocked()
 	s.mu.Unlock()
 
 	// Phase 2: delete files without holding the lock
@@ -246,6 +254,9 @@ func (s *FileMediaStore) CleanExpired() int {
 			}
 			expired = append(expired, expiredItem)
 		}
+	}
+	if len(expired) > 0 {
+		s.persistLocked()
 	}
 	s.mu.Unlock()
 

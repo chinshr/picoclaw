@@ -91,6 +91,7 @@ func resolveMediaRefs(
 		msg := m
 		resolved := make([]string, 0, len(m.Media))
 		var pathTags []string
+		unavailable := 0
 
 		for _, ref := range m.Media {
 			if !strings.HasPrefix(ref, "media://") {
@@ -104,6 +105,10 @@ func resolveMediaRefs(
 					"ref":   ref,
 					"error": err.Error(),
 				})
+				// The placeholder ("[image: photo 1]") still sits in the content,
+				// so dropping the ref silently leaves the model believing an
+				// attachment is present that it cannot see. Mark it instead.
+				unavailable++
 				continue
 			}
 
@@ -113,6 +118,7 @@ func resolveMediaRefs(
 					"path":  localPath,
 					"error": err.Error(),
 				})
+				unavailable++
 				continue
 			}
 
@@ -130,6 +136,9 @@ func resolveMediaRefs(
 		msg.Media = resolved
 		if len(pathTags) > 0 {
 			msg.Content = injectPathTags(msg.Content, pathTags)
+		}
+		if unavailable > 0 {
+			msg.Content = markUnavailablePlaceholders(msg.Content, unavailable)
 		}
 		result = append(result, msg)
 
@@ -240,6 +249,53 @@ func detectMIME(localPath string, meta media.MediaMeta) string {
 		return ""
 	}
 	return kind.MIME.Value
+}
+
+// unavailableTagPrefix marks an attachment whose file the agent cannot open.
+const unavailableTagPrefix = "[attachment-unavailable:"
+
+// buildUnavailableTag creates the marker that replaces a media placeholder when
+// the ref cannot be resolved to a readable file — because the store was
+// restarted, the TTL cleaner removed it, or the file was deleted.
+//
+// This must be explicit in the prompt: a message that still reads
+// "[image: photo 1]" with no path tag invites the model to act as though it saw
+// the image, which produces confident answers about a file nobody ever read.
+func buildUnavailableTag() string {
+	return unavailableTagPrefix + " the sender attached a file, but it is no longer " +
+		"on disk and you cannot see it. Do not describe, guess at, or act on its " +
+		"contents. Tell the sender the attachment was lost and ask them to send it again]"
+}
+
+// markUnavailablePlaceholders rewrites up to count generic media placeholders
+// ("[image: photo 1]", "[audio]", …) into the unavailable marker.
+//
+// It only ever *replaces*: a message with no placeholder is making no claim
+// about an attachment, so there is nothing to correct and nothing is appended.
+// The media type is unknown here — resolution failed before the MIME was read —
+// so whichever placeholder the channel emitted is fair game.
+func markUnavailablePlaceholders(content string, count int) string {
+	patterns := []*regexp.Regexp{
+		imagePlaceholderRegex,
+		audioPlaceholderRegex,
+		videoPlaceholderRegex,
+		filePlaceholderRegex,
+	}
+	tag := buildUnavailableTag()
+	for i := 0; i < count; i++ {
+		replaced := false
+		for _, pattern := range patterns {
+			if loc := pattern.FindStringIndex(content); loc != nil {
+				content = content[:loc[0]] + tag + content[loc[1]:]
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			break
+		}
+	}
+	return content
 }
 
 // buildPathTag creates a structured tag exposing the local file path.

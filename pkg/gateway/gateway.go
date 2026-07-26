@@ -448,6 +448,11 @@ func setupAndStartServices(
 		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
 	})
 	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
+		if restored, err := fms.EnablePersistence(media.IndexPath()); err != nil {
+			logger.WarnCF("media", "persist: disabled", map[string]any{"error": err.Error()})
+		} else if restored > 0 {
+			fmt.Printf("\u2713 Media store restored %d ref(s)\n", restored)
+		}
 		fms.Start()
 	}
 
@@ -696,6 +701,11 @@ func restartServices(
 		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
 	})
 	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
+		if restored, err := fms.EnablePersistence(media.IndexPath()); err != nil {
+			logger.WarnCF("media", "persist: disabled", map[string]any{"error": err.Error()})
+		} else if restored > 0 {
+			fmt.Printf("\u2713 Media store restored %d ref(s)\n", restored)
+		}
 		fms.Start()
 	}
 	if runningServices.ChannelManager != nil {
