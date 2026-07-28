@@ -1121,6 +1121,19 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 	m.httpListeners = append([]net.Listener(nil), listeners...)
 }
 
+// RegisterHTTPHandler mounts a custom handler on the shared HTTP server.
+// Must be called after SetupHTTPServer/SetupHTTPServerListeners. Used by the
+// gateway for non-channel endpoints (e.g. /hooks/session-note).
+func (m *Manager) RegisterHTTPHandler(path string, handler http.Handler) {
+	if m.mux == nil || path == "" || handler == nil {
+		return
+	}
+	m.mux.Handle(path, handler)
+	logger.InfoCF("channels", "Custom HTTP handler registered", map[string]any{
+		"path": path,
+	})
+}
+
 // registerHTTPHandlersLocked registers webhook and health-check handlers for
 // all channels currently in m.channels. Caller must hold m.mu (or ensure
 // exclusive access).

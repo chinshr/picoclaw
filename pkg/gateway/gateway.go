@@ -502,6 +502,15 @@ func setupAndStartServices(
 		runningServices.HealthServer,
 	)
 
+	// Session-note mirror: out-of-band workers post lines to a chat over the
+	// platform API; this endpoint lets them also record those lines in the
+	// agent's session history so the model sees the same conversation the
+	// user does. Refuses all requests unless PICOCLAW_HOOKS_TOKEN is set.
+	runningServices.ChannelManager.RegisterHTTPHandler(
+		"/hooks/session-note",
+		agentLoop.SessionNoteHandler(),
+	)
+
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}

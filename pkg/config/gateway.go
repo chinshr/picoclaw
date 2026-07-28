@@ -16,6 +16,10 @@ type GatewayConfig struct {
 	Port      int    `json:"port"                env:"PICOCLAW_GATEWAY_PORT"`
 	HotReload bool   `json:"hot_reload"          env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
 	LogLevel  string `json:"log_level,omitempty" env:"PICOCLAW_LOG_LEVEL"`
+	// HooksToken authorizes out-of-band POSTs to /hooks/session-note (workers
+	// mirroring their platform-posted lines into session history). Empty
+	// disables the endpoint. Supports enc:// / file:// refs like other secrets.
+	HooksToken SecureString `json:"hooks_token,omitzero" env:"PICOCLAW_HOOKS_TOKEN"`
 }
 
 func canonicalGatewayLogLevel(level logger.LogLevel) string {
