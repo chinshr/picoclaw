@@ -45,6 +45,34 @@ func TestAppendSessionNote_LandsInTheRoutedSession(t *testing.T) {
 	}
 }
 
+// A worker line arriving right after the agent's own reply must extend that
+// reply, not open a second consecutive assistant message — the dangling
+// assistant turn is what preceded the textual tool-call mimicry.
+func TestAppendSessionNote_MergesIntoTrailingAssistantMessage(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	receipt := "Got it — queued for check-in (#102281)."
+	if _, err := al.AppendSessionNote("telegram", "77", "worker", receipt); err != nil {
+		t.Fatalf("first note failed: %v", err)
+	}
+	workerLine := `"Beebo Brinker" by Ann Bannon is checked in. (re #102281)`
+	sessionKey, err := al.AppendSessionNote("telegram", "77", "worker", workerLine)
+	if err != nil {
+		t.Fatalf("second note failed: %v", err)
+	}
+
+	agentInst := al.GetRegistry().GetDefaultAgent()
+	history := agentInst.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("expected 1 merged assistant message, got %d", len(history))
+	}
+	if !strings.Contains(history[0].Content, receipt) ||
+		!strings.Contains(history[0].Content, "Beebo Brinker") {
+		t.Errorf("merged content missing a part: %q", history[0].Content)
+	}
+}
+
 func TestAppendSessionNote_RequiresChannelChatAndText(t *testing.T) {
 	al, _, _, _, cleanup := newTestAgentLoop(t)
 	defer cleanup()

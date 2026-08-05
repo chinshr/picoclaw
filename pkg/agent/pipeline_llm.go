@@ -562,6 +562,29 @@ func (p *Pipeline) CallLLM(
 	}
 	logger.DebugCF("agent", "LLM response", llmResponseFields)
 
+	// Recover tool calls the model emitted as TEXT. History shows past tool
+	// calls flattened to "[tool_use: name, args: {...}]" (seahorse store), and
+	// models occasionally imitate that shape instead of making a native call —
+	// publishing it would leak the syntax to the chat and silently skip the
+	// requested action (2026-07-27 22:59: a check-in photo got its ingest
+	// command posted as the reply; nothing executed).
+	if len(exec.response.ToolCalls) == 0 && !exec.gracefulTerminal {
+		if textualCalls := parseTextualToolCalls(exec.response.Content); len(textualCalls) > 0 {
+			recoveredNames := make([]string, 0, len(textualCalls))
+			for _, tc := range textualCalls {
+				recoveredNames = append(recoveredNames, tc.Function.Name)
+			}
+			logger.WarnCF("agent", "Recovered textual tool call from response content",
+				map[string]any{
+					"agent_id":  ts.agent.ID,
+					"iteration": iteration,
+					"tools":     recoveredNames,
+				})
+			exec.response.ToolCalls = textualCalls
+			exec.response.Content = ""
+		}
+	}
+
 	// No-tool-call path: steering check and direct response
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
 		responseContent := exec.response.Content

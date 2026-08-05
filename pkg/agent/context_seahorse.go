@@ -193,6 +193,14 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 	}
 }
 
+// ResyncSession re-reconciles this session's seahorse copy from the session
+// JSONL. Satisfies contextResyncer, and is called after an out-of-band write
+// to the session store (see AgentLoop.AppendSessionNote) so the next turn
+// assembles from history that already contains the mirrored line.
+func (m *seahorseContextManager) ResyncSession(ctx context.Context, sessionKey string) {
+	m.bootstrapSession(ctx, sessionKey)
+}
+
 // providerToSeahorseMessage converts a providers.Message to a seahorse.Message.
 func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	result := seahorse.Message{
