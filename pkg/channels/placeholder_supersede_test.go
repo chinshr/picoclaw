@@ -44,8 +44,14 @@ func TestRecordPlaceholderDeletesSupersededBubble(t *testing.T) {
 
 	waitForDeletes(t, ch, 2)
 
+	// Each delete runs in its own goroutine, so the two can land in either
+	// order. Only the set matters: both superseded bubbles must be gone.
 	deleted := ch.deletedSnapshot()
-	if deleted[0] != "ph-1" || deleted[1] != "ph-2" {
+	got := make(map[string]bool, len(deleted))
+	for _, id := range deleted {
+		got[id] = true
+	}
+	if len(deleted) != 2 || !got["ph-1"] || !got["ph-2"] {
 		t.Errorf("expected ph-1 and ph-2 deleted, got %v", deleted)
 	}
 
