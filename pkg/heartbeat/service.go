@@ -27,6 +27,16 @@ const (
 	minIntervalMinutes     = 5
 	defaultIntervalMinutes = 30
 	userTasksMarker        = "Add your heartbeat tasks below this line:"
+
+	// failureAlertThreshold is the number of CONSECUTIVE failed heartbeat
+	// turns after which a canned (non-LLM) alert is pushed to the last active
+	// channel. The alert must not depend on the LLM: the most likely cause of
+	// a failure streak is exactly that the LLM/provider is unreachable
+	// (e.g. the 2026-08 account suspension that silently stopped web sync,
+	// door-left-open and camera-wedge checks for 3 days).
+	failureAlertThreshold = 3
+	// failureErrorSnippetLen caps how much of the last error is quoted in the alert.
+	failureErrorSnippetLen = 200
 )
 
 // HeartbeatHandler is the function type for handling heartbeat.
@@ -44,6 +54,11 @@ type HeartbeatService struct {
 	enabled   bool
 	mu        sync.RWMutex
 	stopChan  chan struct{}
+
+	// Failure-streak tracking (guarded by mu). alertSent latches after the
+	// streak alert goes out so a long outage produces one alert, not one per tick.
+	consecutiveFailures int
+	alertSent           bool
 }
 
 // NewHeartbeatService creates a new heartbeat service
@@ -190,7 +205,16 @@ func (hs *HeartbeatService) executeHeartbeat() {
 	// Handle different result types
 	if result.IsError {
 		hs.logErrorf("Heartbeat error: %s", result.ForLLM)
+		if alert := hs.recordFailure(result.ForLLM); alert != "" {
+			// Canned, non-LLM notification: if the streak is caused by the
+			// LLM/provider being down, this is the only path that still works.
+			hs.sendResponse(alert)
+		}
 		return
+	}
+
+	if recovery := hs.recordSuccess(); recovery != "" {
+		hs.sendResponse(recovery)
 	}
 
 	if result.Async {
@@ -216,6 +240,49 @@ func (hs *HeartbeatService) executeHeartbeat() {
 	}
 
 	hs.logInfof("Heartbeat completed: %s", result.ForLLM)
+}
+
+// recordFailure bumps the consecutive-failure streak. When the streak reaches
+// failureAlertThreshold (and no alert has been sent for this streak yet) it
+// returns a canned alert message to push to the user; otherwise "".
+func (hs *HeartbeatService) recordFailure(errMsg string) string {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+
+	hs.consecutiveFailures++
+	if hs.consecutiveFailures < failureAlertThreshold || hs.alertSent {
+		return ""
+	}
+	hs.alertSent = true
+
+	snippet := strings.TrimSpace(errMsg)
+	if len(snippet) > failureErrorSnippetLen {
+		snippet = snippet[:failureErrorSnippetLen] + "…"
+	}
+	return fmt.Sprintf(
+		"⚠️ Heartbeat checks have failed %d times in a row (about %s of coverage lost). "+
+			"Scheduled tasks are NOT running until this is fixed. Last error: %s",
+		hs.consecutiveFailures,
+		(time.Duration(hs.consecutiveFailures) * hs.interval).Round(time.Minute),
+		snippet,
+	)
+}
+
+// recordSuccess resets the failure streak. If an alert had been sent for the
+// streak that just ended, it returns a canned recovery message; otherwise "".
+func (hs *HeartbeatService) recordSuccess() string {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+
+	failed := hs.consecutiveFailures
+	alerted := hs.alertSent
+	hs.consecutiveFailures = 0
+	hs.alertSent = false
+
+	if !alerted {
+		return ""
+	}
+	return fmt.Sprintf("✅ Heartbeat recovered after %d failed checks — scheduled tasks are running again.", failed)
 }
 
 // buildPrompt builds the heartbeat prompt from HEARTBEAT.md

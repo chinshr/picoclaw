@@ -59,6 +59,7 @@ type AgentLoop struct {
 	hookRuntime    hookRuntime
 	steering       *steeringQueue
 	speculation    *speculationManager
+	intake         *intakeDispatcher
 	pendingSkills  sync.Map
 	pendingStops   sync.Map
 	mu             sync.RWMutex
@@ -156,6 +157,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	idleTicker := time.NewTicker(100 * time.Millisecond)
 	defer idleTicker.Stop()
 
+	al.intake.Start(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -174,6 +177,18 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// messages. Intercept BEFORE turn dispatch — they never run a turn.
 			if ctrl := msg.Context.Raw[bus.RawKeyControl]; ctrl != "" {
 				al.handleSpeculationControl(msg, ctrl)
+				continue
+			}
+
+			// Pre-agent intake (hooks.intake). An attachment is an independent
+			// unit of work: merged into a running turn as steering it would be
+			// collapsed into that turn's single reply, which is how a burst of
+			// covers turns into one answer and two silent drops. Hand those
+			// messages to the intake endpoint instead — it never claims the
+			// session, so they proceed in parallel with whatever the agent is
+			// doing. Anything the endpoint declines (or a failed POST, or a
+			// full queue) comes straight back to the normal path below.
+			if al.intake.ShouldHandle(msg) && al.intake.Enqueue(msg) {
 				continue
 			}
 

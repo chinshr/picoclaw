@@ -96,6 +96,7 @@ func NewAgentLoop(
 	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
+	al.intake = newIntakeDispatcher(al)
 	al.hooks = NewHookManager(al.runtimeEvents.Channel())
 	configureHookManagerFromConfig(al.hooks, cfg)
 	al.contextManager = al.resolveContextManager()

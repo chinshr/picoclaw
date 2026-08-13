@@ -214,6 +214,9 @@ type HooksConfig struct {
 	Defaults  HookDefaultsConfig           `json:"defaults,omitempty"`
 	Builtins  map[string]BuiltinHookConfig `json:"builtins,omitempty"`
 	Processes map[string]ProcessHookConfig `json:"processes,omitempty"`
+	// Intake short-circuits attachment-bearing inbound messages to an external
+	// endpoint before a turn is claimed. See IntakeHookConfig.
+	Intake IntakeHookConfig `json:"intake,omitzero"`
 }
 
 type HookDefaultsConfig struct {

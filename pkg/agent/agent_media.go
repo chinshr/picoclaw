@@ -138,7 +138,7 @@ func resolveMediaRefs(
 			msg.Content = injectPathTags(msg.Content, pathTags)
 		}
 		if unavailable > 0 {
-			msg.Content = markUnavailablePlaceholders(msg.Content, unavailable)
+			msg.Content = markUnavailablePlaceholders(msg.Content, unavailable, idx >= currentTurnStart)
 		}
 		result = append(result, msg)
 
@@ -254,6 +254,11 @@ func detectMIME(localPath string, meta media.MediaMeta) string {
 // unavailableTagPrefix marks an attachment whose file the agent cannot open.
 const unavailableTagPrefix = "[attachment-unavailable:"
 
+// expiredTagPrefix marks an attachment from an earlier turn that has since been
+// cleaned up. Distinct from unavailableTagPrefix so history cannot masquerade
+// as a problem with the message being answered right now.
+const expiredTagPrefix = "[attachment-expired:"
+
 // buildUnavailableTag creates the marker that replaces a media placeholder when
 // the ref cannot be resolved to a readable file — because the store was
 // restarted, the TTL cleaner removed it, or the file was deleted.
@@ -267,6 +272,19 @@ func buildUnavailableTag() string {
 		"contents. Tell the sender the attachment was lost and ask them to send it again]"
 }
 
+// buildExpiredHistoryTag is the same correction for an attachment in an OLDER
+// message. History is re-resolved on every turn, so a photo that has aged past
+// the media TTL turns every later turn's history into a fresh "attachment lost"
+// instruction — with no date on it. The model then reports the loss as though
+// it were about the message in front of it, which is how a steward gets told
+// their brand-new cover photo is gone. Past-tense, no instruction, explicitly
+// out of scope.
+func buildExpiredHistoryTag() string {
+	return expiredTagPrefix + " an attachment from an earlier message has since " +
+		"been cleaned up. It is not part of the current request: do not describe " +
+		"it, do not mention it, and do not ask the sender to resend it]"
+}
+
 // markUnavailablePlaceholders rewrites up to count generic media placeholders
 // ("[image: photo 1]", "[audio]", …) into the unavailable marker.
 //
@@ -274,7 +292,10 @@ func buildUnavailableTag() string {
 // about an attachment, so there is nothing to correct and nothing is appended.
 // The media type is unknown here — resolution failed before the MIME was read —
 // so whichever placeholder the channel emitted is fair game.
-func markUnavailablePlaceholders(content string, count int) string {
+// current distinguishes the message being answered right now (imperative: tell
+// the sender, ask for a resend) from history (past tense, explicitly out of
+// scope).
+func markUnavailablePlaceholders(content string, count int, current bool) string {
 	patterns := []*regexp.Regexp{
 		imagePlaceholderRegex,
 		audioPlaceholderRegex,
@@ -282,6 +303,9 @@ func markUnavailablePlaceholders(content string, count int) string {
 		filePlaceholderRegex,
 	}
 	tag := buildUnavailableTag()
+	if !current {
+		tag = buildExpiredHistoryTag()
+	}
 	for i := 0; i < count; i++ {
 		replaced := false
 		for _, pattern := range patterns {

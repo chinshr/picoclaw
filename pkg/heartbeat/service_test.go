@@ -165,6 +165,93 @@ func TestExecuteHeartbeat_NilResult(t *testing.T) {
 	hs.executeHeartbeat()
 }
 
+func TestFailureStreak_AlertOnceThenRecovery(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "heartbeat-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	hs := NewHeartbeatService(tmpDir, 30, true)
+
+	if msg := hs.recordFailure("boom 1"); msg != "" {
+		t.Fatalf("failure 1: got alert %q, want none", msg)
+	}
+	if msg := hs.recordFailure("boom 2"); msg != "" {
+		t.Fatalf("failure 2: got alert %q, want none", msg)
+	}
+	alert := hs.recordFailure("API request failed: Status: 429")
+	if alert == "" {
+		t.Fatal("failure 3: want alert, got none")
+	}
+	if !strings.Contains(alert, "3 times") || !strings.Contains(alert, "429") {
+		t.Fatalf("alert = %q, want streak count and error snippet", alert)
+	}
+	if msg := hs.recordFailure("boom 4"); msg != "" {
+		t.Fatalf("failure 4: got second alert %q, want latched silence", msg)
+	}
+
+	recovery := hs.recordSuccess()
+	if recovery == "" {
+		t.Fatal("recovery after alerted streak: want message, got none")
+	}
+	if !strings.Contains(recovery, "4") {
+		t.Fatalf("recovery = %q, want failed-check count", recovery)
+	}
+	if msg := hs.recordSuccess(); msg != "" {
+		t.Fatalf("second success: got %q, want none", msg)
+	}
+}
+
+func TestFailureStreak_ErrorSnippetTruncated(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "heartbeat-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	hs := NewHeartbeatService(tmpDir, 30, true)
+	long := strings.Repeat("x", 1000)
+	hs.recordFailure(long)
+	hs.recordFailure(long)
+	alert := hs.recordFailure(long)
+	if alert == "" {
+		t.Fatal("want alert on third failure")
+	}
+	if len(alert) > 450 {
+		t.Fatalf("alert length = %d, want error snippet truncated", len(alert))
+	}
+}
+
+func TestExecuteHeartbeat_ErrorResultBumpsStreak(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "heartbeat-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	hs := NewHeartbeatService(tmpDir, 30, true)
+	hs.stopChan = make(chan struct{}) // Enable for testing
+
+	hs.SetHandler(func(prompt, channel, chatID string) *tools.ToolResult {
+		return &tools.ToolResult{ForLLM: "API request failed: Status: 429", IsError: true}
+	})
+	os.WriteFile(filepath.Join(tmpDir, "HEARTBEAT.md"), []byte("Test task"), 0o644)
+
+	for i := 0; i < failureAlertThreshold; i++ {
+		hs.executeHeartbeat() // bus is nil: alert send is a safe no-op
+	}
+
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
+	if hs.consecutiveFailures != failureAlertThreshold {
+		t.Fatalf("consecutiveFailures = %d, want %d", hs.consecutiveFailures, failureAlertThreshold)
+	}
+	if !hs.alertSent {
+		t.Fatal("alertSent = false, want true after threshold reached")
+	}
+}
+
 // TestLogPath verifies heartbeat log is written to workspace directory
 func TestLogPath(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "heartbeat-test-*")

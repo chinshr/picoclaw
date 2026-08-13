@@ -307,9 +307,49 @@ func (m *Manager) toolFeedbackSeparateMessagesEnabled() bool {
 
 // RecordPlaceholder registers a placeholder message for later editing.
 // Implements PlaceholderRecorder.
+//
+// Placeholders are tracked per channel+chat, so a second inbound message
+// arriving before the first one is answered replaces the entry. The message it
+// replaces is still sitting in the chat: only the tracked placeholder is ever
+// edited or deleted when the reply lands, so the older bubble would stay there
+// forever reading like the bot answered and gave up. That is exactly what a
+// burst of messages produces, because the follow-ups are merged into the
+// running turn as steering and never get a reply of their own. Delete the
+// superseded bubble instead of stranding it.
 func (m *Manager) RecordPlaceholder(channel, chatID, placeholderID string) {
 	key := channel + ":" + chatID
-	m.placeholders.Store(key, placeholderEntry{id: placeholderID, createdAt: time.Now()})
+	previous, existed := m.placeholders.Swap(key, placeholderEntry{
+		id:        placeholderID,
+		createdAt: time.Now(),
+	})
+	if !existed {
+		return
+	}
+	stale, ok := previous.(placeholderEntry)
+	if !ok || stale.id == "" || stale.id == placeholderID {
+		return
+	}
+	ch, ok := m.GetChannel(channel)
+	if !ok {
+		return
+	}
+	deleter, ok := ch.(MessageDeleter)
+	if !ok {
+		return
+	}
+	// Best effort, off the caller's path: this runs on the inbound hot path.
+	go func(id string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := deleter.DeleteMessage(ctx, chatID, id); err != nil {
+			logger.DebugCF("channels", "Failed to delete superseded placeholder",
+				map[string]any{
+					"channel": channel,
+					"chat_id": chatID,
+					"error":   err.Error(),
+				})
+		}
+	}(stale.id)
 }
 
 // SendPlaceholder sends a "Thinking…" placeholder for the given channel/chatID

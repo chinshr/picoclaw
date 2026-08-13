@@ -90,3 +90,74 @@ func TestInjectPathTags_PathTagStillReplacesPlaceholder(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// History is re-resolved on every turn, so a photo that aged past the media TTL
+// keeps reappearing as "attachment lost — ask them to send it again". Told that
+// about a message from an hour ago, the model reports it against whatever is in
+// front of it now: the steward sends a fresh cover and is told the file is gone.
+// An expired attachment in history must be past tense and explicitly out of scope.
+func TestResolveMediaRefs_ExpiredHistoryDoesNotDemandAResend(t *testing.T) {
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+
+	livePath := filepath.Join(dir, "winter-soldier.png")
+	if err := os.WriteFile(livePath, []byte("cover"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	liveRef, err := store.Store(livePath, media.MediaMeta{Filename: "winter-soldier.png"}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages := []providers.Message{
+		{
+			Role:    "user",
+			Content: "checkin this one [image: photo 1]",
+			Media:   []string{"media://expired-an-hour-ago"},
+		},
+		{Role: "assistant", Content: "queued for check-in (#101)"},
+		{
+			Role:    "user",
+			Content: "checkin The Winter Soldier [image: photo 1]",
+			Media:   []string{liveRef},
+		},
+	}
+
+	// The current turn starts at the last message.
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize, 2)
+
+	history := result[0].Content
+	if strings.Contains(history, "attachment-unavailable") {
+		t.Errorf("history must not use the current-turn marker, got %q", history)
+	}
+	if !strings.Contains(history, "attachment-expired") {
+		t.Errorf("expected the neutral history marker, got %q", history)
+	}
+	if strings.Contains(history, "send it again") {
+		t.Errorf("history must not instruct the model to ask for a resend, got %q", history)
+	}
+
+	current := result[2].Content
+	if !strings.Contains(current, livePath) {
+		t.Errorf("the live attachment must still get a path tag, got %q", current)
+	}
+}
+
+// The imperative marker is still exactly right for the message being answered.
+func TestResolveMediaRefs_CurrentTurnStillAsksForAResend(t *testing.T) {
+	store := media.NewFileMediaStore()
+
+	messages := []providers.Message{
+		{Role: "user", Content: "older question", Media: nil},
+		{Role: "user", Content: "checkin [image: photo 1]", Media: []string{"media://gone"}},
+	}
+
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize, 1)
+
+	if !strings.Contains(result[1].Content, "attachment-unavailable") {
+		t.Errorf("current-turn loss must stay imperative, got %q", result[1].Content)
+	}
+	if !strings.Contains(result[1].Content, "send it again") {
+		t.Errorf("current-turn loss must ask for a resend, got %q", result[1].Content)
+	}
+}

@@ -556,6 +556,16 @@
       "observer_timeout_ms": 500,
       "interceptor_timeout_ms": 5000,
       "approval_timeout_ms": 60000
+    },
+    "_intake_comment": "Pre-agent intake. Inbound messages carrying attachments are POSTed to url BEFORE a turn is claimed, one at a time in arrival order. The endpoint answers {handled:true, reply:\"...\"} to own the message (reply posted verbatim, no turn runs) or {handled:false} to hand it back. Errors, refusals and a full queue all fall back to the agent. Without this, a burst of attachments is merged into the running turn as steering and collapses into a single reply.",
+    "intake": {
+      "enabled": false,
+      "url": "http://127.0.0.1:18792/v1/intake/telegram",
+      "token": "",
+      "timeout_ms": 15000,
+      "queue_size": 64,
+      "channels": ["telegram"],
+      "text_only": false
     }
   },
   "events": {
