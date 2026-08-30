@@ -136,8 +136,14 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 		return err
 	}
 
+	// The post-turn summarize pass runs its leaf phase asynchronously: nothing in
+	// the finishing turn reads the summary, and blocking on it put an LLM call
+	// between "answer ready" and "answer spoken" (voice-turn-triage finding 02,
+	// measured at 8-10 s). The proactive pass must stay synchronous — it runs
+	// before assembling precisely to make the context fit.
 	_, err := m.engine.Compact(ctx, req.SessionKey, seahorse.CompactInput{
 		Force:  req.Reason == ContextCompressReasonRetry,
+		Async:  req.Reason == ContextCompressReasonSummarize,
 		Budget: &req.Budget,
 	})
 	return err

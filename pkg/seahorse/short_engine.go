@@ -76,6 +76,7 @@ type CompactionEngine struct {
 	config         Config
 	complete       CompleteFn
 	condensing     sync.Map // map[int64]struct{} — dedup for async condensed goroutines
+	compactingLeaf sync.Map // map[int64]struct{} — dedup for async LEAF goroutines
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 }

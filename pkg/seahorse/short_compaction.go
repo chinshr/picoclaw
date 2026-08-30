@@ -15,6 +15,17 @@ import (
 type CompactInput struct {
 	Budget *int // Token budget override
 	Force  bool // Force compaction even if below threshold
+	// Async runs phase 1 (leaf compaction) in a goroutine instead of blocking
+	// the caller. Set ONLY for the post-turn summarize pass, where nothing in
+	// the current turn reads the summary it produces — leaf compaction makes an
+	// LLM call, and on the voice path that call sat between "answer ready" and
+	// "answer spoken" for 8-10 s (library-claw
+	// docs/software/voice-turn-triage/02-sync-leaf-compaction.md).
+	//
+	// It must stay FALSE for the proactive pass (which runs before assembling to
+	// make the context fit the budget) and for retry-after-overflow, whose whole
+	// job is to have shrunk the context by the time they return.
+	Async bool
 }
 
 // CompactResult describes what was compacted.
@@ -46,18 +57,47 @@ func (e *CompactionEngine) Close() {
 func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input CompactInput) (*CompactResult, error) {
 	result := &CompactResult{}
 
-	// Phase 1: leaf compaction (synchronous, every turn)
-	summaryID, err := e.compactLeaf(ctx, convID)
-	if err != nil {
-		return nil, fmt.Errorf("compact leaf: %w", err)
-	}
-	if summaryID != nil {
-		result.SummariesCreated = append(result.SummariesCreated, *summaryID)
-		result.LeafSummaries++
-		logger.InfoCF("seahorse", "compact: leaf", map[string]any{
-			"conv_id":    convID,
-			"summary_id": *summaryID,
-		})
+	// Phase 1: leaf compaction. Async for the post-turn summarize pass, blocking
+	// for proactive/retry (see CompactInput.Async). Dedup mirrors phase 2 below:
+	// a second turn arriving while a leaf summary is still being generated skips
+	// rather than starting a concurrent one for the same conversation.
+	if input.Async {
+		if _, loaded := e.compactingLeaf.LoadOrStore(convID, struct{}{}); !loaded {
+			go func() {
+				defer e.compactingLeaf.Delete(convID)
+				// NOT the caller's ctx: it is the turn context and is cancelled at
+				// turn teardown, which would kill the summary mid-flight.
+				id, gerr := e.compactLeaf(e.shutdownCtx, convID)
+				if gerr != nil {
+					logger.ErrorCF("seahorse", "compact: leaf (async) failed", map[string]any{
+						"conv_id": convID, "error": gerr.Error(),
+					})
+					return
+				}
+				if id != nil {
+					logger.InfoCF("seahorse", "compact: leaf (async)", map[string]any{
+						"conv_id": convID, "summary_id": *id,
+					})
+				}
+			}()
+		} else {
+			logger.DebugCF("seahorse", "compact: leaf already in flight, skipping", map[string]any{
+				"conv_id": convID,
+			})
+		}
+	} else {
+		summaryID, err := e.compactLeaf(ctx, convID)
+		if err != nil {
+			return nil, fmt.Errorf("compact leaf: %w", err)
+		}
+		if summaryID != nil {
+			result.SummariesCreated = append(result.SummariesCreated, *summaryID)
+			result.LeafSummaries++
+			logger.InfoCF("seahorse", "compact: leaf", map[string]any{
+				"conv_id":    convID,
+				"summary_id": *summaryID,
+			})
+		}
 	}
 
 	// Phase 2: condensed compaction if over threshold
