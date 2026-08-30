@@ -121,35 +121,67 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	al.emitEvent(
-		runtimeevents.KindAgentLLMRequest,
-		ts.eventMeta("runTurn", "turn.llm.request"),
-		LLMRequestPayload{
-			Model:         exec.llmModel,
-			MessagesCount: len(exec.callMessages),
-			ToolsCount:    len(exec.providerToolDefs),
-			MaxTokens:     ts.agent.MaxTokens,
-			Temperature:   ts.agent.Temperature,
-		},
-	)
+	// Speculative carry-forward (library-claw
+	// docs/software/voice-turn-triage/01-speculation-tool-call-carry.md): a
+	// speculation that ended on a tool call recorded its decision on the way out.
+	// If this turn is the bridge's re-run of that exact user message, replay it
+	// rather than pay a second identical provider round trip.
+	//
+	// Only the turn's FIRST call qualifies — later iterations have tool results
+	// in context by construction. Pending steering also disqualifies: a message
+	// that arrived after the speculation is new information the carried decision
+	// never saw.
+	var carriedResponse *providers.LLMResponse
+	if iteration == 1 && len(exec.pendingMessages) == 0 && al.speculation != nil {
+		carriedResponse = al.speculation.takeCarry(ts.sessionKey, ts.userMessage)
+	}
 
-	logger.DebugCF("agent", "LLM request",
-		map[string]any{
-			"agent_id":          ts.agent.ID,
-			"iteration":         iteration,
-			"model":             exec.llmModel,
-			"messages_count":    len(exec.callMessages),
-			"tools_count":       len(exec.providerToolDefs),
-			"max_tokens":        ts.agent.MaxTokens,
-			"temperature":       ts.agent.Temperature,
-			"system_prompt_len": len(exec.callMessages[0].Content),
-		})
-	logger.DebugCF("agent", "Full LLM request",
-		map[string]any{
-			"iteration":     iteration,
-			"messages_json": formatMessagesForLog(exec.callMessages),
-			"tools_json":    formatToolsForLog(exec.providerToolDefs),
-		})
+	if carriedResponse == nil {
+		al.emitEvent(
+			runtimeevents.KindAgentLLMRequest,
+			ts.eventMeta("runTurn", "turn.llm.request"),
+			LLMRequestPayload{
+				Model:         exec.llmModel,
+				MessagesCount: len(exec.callMessages),
+				ToolsCount:    len(exec.providerToolDefs),
+				MaxTokens:     ts.agent.MaxTokens,
+				Temperature:   ts.agent.Temperature,
+			},
+		)
+
+		logger.DebugCF("agent", "LLM request",
+			map[string]any{
+				"agent_id":          ts.agent.ID,
+				"iteration":         iteration,
+				"model":             exec.llmModel,
+				"messages_count":    len(exec.callMessages),
+				"tools_count":       len(exec.providerToolDefs),
+				"max_tokens":        ts.agent.MaxTokens,
+				"temperature":       ts.agent.Temperature,
+				"system_prompt_len": len(exec.callMessages[0].Content),
+			})
+		logger.DebugCF("agent", "Full LLM request",
+			map[string]any{
+				"iteration":     iteration,
+				"messages_json": formatMessagesForLog(exec.callMessages),
+				"tools_json":    formatToolsForLog(exec.providerToolDefs),
+			})
+	} else {
+		// No turn.llm.request event: no request was made. The response event
+		// below still fires (the tool call belongs in the turn record) and
+		// carries replayed=true with a ~0 duration.
+		logger.InfoCF("agent", "speculation carry replayed (LLM call skipped)",
+			map[string]any{
+				"agent_id":    ts.agent.ID,
+				"iteration":   iteration,
+				"session_key": ts.sessionKey,
+				"tool_calls":  len(carriedResponse.ToolCalls),
+			})
+	}
+
+	// Wall time of this one call. Covers streaming, retries and provider
+	// fallback — everything between having a request and having a response.
+	llmCallStart := time.Now()
 
 	// LLM call closure with fallback support
 	callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
@@ -266,6 +298,12 @@ func (p *Pipeline) CallLLM(
 		backoffSecs = 2
 	}
 	for retry := 0; retry <= maxRetries; retry++ {
+		// Replayed decision: the provider is never called, so none of the retry,
+		// fallback or context-compaction machinery below applies.
+		if carriedResponse != nil {
+			exec.response, err = carriedResponse, nil
+			break
+		}
 		exec.response, err = callLLM(exec.callMessages, exec.providerToolDefs)
 		if err == nil {
 			break
@@ -536,6 +574,7 @@ func (p *Pipeline) CallLLM(
 			al.targetReasoningChannelID(ts.channel),
 		)
 	}
+	llmCallDuration := time.Since(llmCallStart)
 	al.emitEvent(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
@@ -543,12 +582,16 @@ func (p *Pipeline) CallLLM(
 			ContentLen:   len(exec.response.Content),
 			ToolCalls:    len(exec.response.ToolCalls),
 			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+			Replayed:     carriedResponse != nil,
+			Duration:     llmCallDuration,
 		},
 	)
 
 	llmResponseFields := map[string]any{
 		"agent_id":       ts.agent.ID,
 		"iteration":      iteration,
+		"duration_ms":    llmCallDuration.Milliseconds(),
+		"replayed":       carriedResponse != nil,
 		"content_chars":  len(exec.response.Content),
 		"tool_calls":     len(exec.response.ToolCalls),
 		"reasoning":      exec.response.Reasoning,
@@ -655,10 +698,28 @@ func (p *Pipeline) CallLLM(
 	if ts.speculative {
 		cancelConfiguredStreamingLLM(turnCtx, exec)
 		exec.finalContent = ""
+		// The decision is pure — no tool ran — so it survives the abort and the
+		// re-run of this same transcript replays it instead of re-deriving it.
+		// See speculationManager.recordCarry and voice-turn-triage finding 01.
+		//
+		// ONLY from iteration 1. The carry is keyed by the turn's ROOT user
+		// message, so it is a truthful key only when the decision was a function
+		// of that message alone. A speculation that reached iteration 2 got there
+		// because steering was injected (field 2026-08-30: interim "Can you"
+		// speculated, final "...give the dog some water?" arrived as steering,
+		// and the read_file decision was made at iteration 2 from the steering
+		// text while ts.userMessage was still "Can you"). Recording that would
+		// file a decision under a message that did not produce it.
+		carriedDecisionRecorded := al.speculation != nil && iteration == 1
+		if al.speculation != nil {
+			al.speculation.recordCarry(ts.sessionKey, ts.userMessage, iteration, exec.response)
+		}
 		logger.InfoCF("agent", "speculative turn aborted on tool call (no tools executed)", map[string]any{
 			"agent_id":       ts.agent.ID,
 			"speculation_id": ts.speculationID,
 			"tools":          toolNames,
+			"iteration":      iteration,
+			"carried":        carriedDecisionRecorded,
 		})
 		return ControlBreak, nil
 	}

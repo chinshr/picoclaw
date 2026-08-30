@@ -69,6 +69,18 @@ type LLMResponsePayload struct {
 	ContentLen   int
 	ToolCalls    int
 	HasReasoning bool
+	// Replayed is true when this response was NOT produced by a provider call
+	// this turn: it is an aborted speculation's tool-call decision being
+	// replayed into the re-run (speculationManager carry-forward). Duration is
+	// ~0 for these, so without this flag a replay is indistinguishable in the
+	// event stream from an impossibly fast model.
+	Replayed bool
+	// Duration is the wall time of this single LLM call: from just after
+	// the request is assembled to the response being in hand, including
+	// streaming, retries and provider fallback. A turn that runs several
+	// tool rounds makes one call per round, and only the sum was
+	// previously observable (agent.turn.end duration_ms).
+	Duration time.Duration
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.

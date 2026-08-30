@@ -271,6 +271,10 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["content_len"] = payload.ContentLen
 		fields["tool_calls"] = payload.ToolCalls
 		fields["has_reasoning"] = payload.HasReasoning
+		fields["duration_ms"] = payload.Duration.Milliseconds()
+		if payload.Replayed {
+			fields["replayed"] = true
+		}
 	case LLMRetryPayload:
 		fields["attempt"] = payload.Attempt
 		fields["max_retries"] = payload.MaxRetries

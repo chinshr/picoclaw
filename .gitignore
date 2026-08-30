@@ -74,3 +74,6 @@ docker/data
 
 .omc/
 .worktrees/
+
+# Throwaway patch/helper scripts from assistant sessions
+.claw-scratch/
