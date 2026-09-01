@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gomarkdown/markdown"
 	"github.com/gomarkdown/markdown/ast"
@@ -23,6 +24,7 @@ var namePattern = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`)
 const (
 	MaxNameLength        = 64
 	MaxDescriptionLength = 1024
+	MaxCommandLength     = 256
 )
 
 type SkillMetadata struct {
@@ -33,6 +35,12 @@ type SkillMetadata struct {
 	// the model in the skill catalog; the prompt rule turns it into a
 	// "say what you'll do, wait for a yes" step. Set via frontmatter `confirm: true`.
 	Confirm bool `json:"confirm"`
+	// Command is the skill's canonical invocation, surfaced in the catalog so the
+	// model can run the common case without spending a round trip reading
+	// SKILL.md first. Set via frontmatter `command:`. Only set it when running
+	// that command blind is genuinely safe — it is a promise that the
+	// description carries everything the hot path needs.
+	Command string `json:"command"`
 }
 
 type SkillInfo struct {
@@ -41,6 +49,7 @@ type SkillInfo struct {
 	Source      string `json:"source"`
 	Description string `json:"description"`
 	Confirm     bool   `json:"confirm"`
+	Command     string `json:"command"`
 }
 
 func (info SkillInfo) validate() error {
@@ -58,7 +67,25 @@ func (info SkillInfo) validate() error {
 	} else if len(info.Description) > MaxDescriptionLength {
 		errs = errors.Join(errs, fmt.Errorf("description exceeds %d character", MaxDescriptionLength))
 	}
+	if len(info.Command) > MaxCommandLength {
+		errs = errors.Join(errs, fmt.Errorf("command exceeds %d character", MaxCommandLength))
+	}
 	return errs
+}
+
+// clampToBytes cuts s to at most max bytes without splitting a rune. Used so an
+// over-long description costs the model a clipped sentence instead of costing it
+// the whole skill: ListSkills used to drop the entry, which silently removed the
+// skill from the catalog (workspace `inventory` was invisible this way).
+func clampToBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 type SkillsLoader struct {
@@ -130,6 +157,20 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 				info.Description = metadata.Description
 				info.Name = metadata.Name
 				info.Confirm = metadata.Confirm
+				info.Command = metadata.Command
+			}
+			// Truncate rather than reject: a clipped description still routes the
+			// skill, a dropped skill does not exist as far as the model is concerned.
+			if len(info.Description) > MaxDescriptionLength {
+				slog.Warn("skill description truncated for the catalog",
+					"name", info.Name, "source", source,
+					"bytes", len(info.Description), "max", MaxDescriptionLength)
+				info.Description = clampToBytes(info.Description, MaxDescriptionLength)
+			}
+			if len(info.Command) > MaxCommandLength {
+				slog.Warn("skill command too long, dropping it from the catalog entry",
+					"name", info.Name, "source", source, "bytes", len(info.Command))
+				info.Command = ""
 			}
 			if err := info.validate(); err != nil {
 				slog.Warn("invalid skill from "+source, "name", info.Name, "error", err)
@@ -215,6 +256,9 @@ func (sl *SkillsLoader) BuildSkillsSummary() string {
 		lines = append(lines, fmt.Sprintf("  <skill>"))
 		lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapedName))
 		lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapedDesc))
+		if s.Command != "" {
+			lines = append(lines, fmt.Sprintf("    <command>%s</command>", escapeXML(s.Command)))
+		}
 		lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapedPath))
 		lines = append(lines, fmt.Sprintf("    <source>%s</source>", s.Source))
 		if s.Confirm {
@@ -259,6 +303,7 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Confirm     bool   `json:"confirm"`
+		Command     string `json:"command"`
 	}
 	if err := json.Unmarshal([]byte(frontmatter), &jsonMeta); err == nil {
 		if jsonMeta.Name != "" {
@@ -268,11 +313,12 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 			metadata.Description = jsonMeta.Description
 		}
 		metadata.Confirm = jsonMeta.Confirm
+		metadata.Command = jsonMeta.Command
 		return metadata
 	}
 
 	// Fall back to simple YAML parsing
-	yamlMeta := sl.parseSimpleYAML(frontmatter)
+	yamlMeta := sl.parseSimpleYAML(frontmatter, skillPath)
 	if name := yamlMeta["name"]; name != "" {
 		metadata.Name = name
 	}
@@ -281,6 +327,9 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 	}
 	if yamlMeta["confirm"] == "true" {
 		metadata.Confirm = true
+	}
+	if command := yamlMeta["command"]; command != "" {
+		metadata.Command = command
 	}
 	return metadata
 }
@@ -340,15 +389,24 @@ func nodeText(n ast.Node) string {
 }
 
 // parseSimpleYAML parses YAML frontmatter and extracts known metadata fields.
-func (sl *SkillsLoader) parseSimpleYAML(content string) map[string]string {
+// skillPath is used only for logging; pass "" when the source is not a file.
+func (sl *SkillsLoader) parseSimpleYAML(content string, skillPath string) map[string]string {
 	result := make(map[string]string)
 
 	var meta struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
 		Confirm     bool   `yaml:"confirm"`
+		Command     string `yaml:"command"`
 	}
 	if err := yaml.Unmarshal([]byte(content), &meta); err != nil {
+		// Loudly, because this used to be silent and cost four skills their entire
+		// frontmatter: a plain YAML scalar may not contain ": ", so one colon in a
+		// description throws away name, description and command, and the catalog
+		// quietly falls back to the markdown body's first paragraph.
+		slog.Warn("skill frontmatter is not valid YAML; every field in it was ignored "+
+			"and the catalog fell back to the markdown body",
+			"skill_path", skillPath, "error", err)
 		return result
 	}
 	if meta.Name != "" {
@@ -359,6 +417,9 @@ func (sl *SkillsLoader) parseSimpleYAML(content string) map[string]string {
 	}
 	if meta.Confirm {
 		result["confirm"] = "true"
+	}
+	if meta.Command != "" {
+		result["command"] = meta.Command
 	}
 
 	return result

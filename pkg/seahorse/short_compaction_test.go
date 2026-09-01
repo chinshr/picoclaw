@@ -49,10 +49,13 @@ func newTestCompactionEngine(t *testing.T) (*CompactionEngine, *Store, int64) {
 	// Register cleanup here (after openTestDB) so it runs BEFORE openTestDB's db.Close().
 	t.Cleanup(func() {
 		shutdownCancel()
-		// Wait for async condensed goroutine to finish (poll condensing map)
+		// Wait for async goroutines to finish (poll both dedup maps) before the
+		// DB closes: condensed (phase 2) and leaf (phase 1 when CompactInput.Async).
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if _, exists := ce.condensing.Load(convID); !exists {
+			_, condensing := ce.condensing.Load(convID)
+			_, leafing := ce.compactingLeaf.Load(convID)
+			if !condensing && !leafing {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)

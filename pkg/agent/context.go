@@ -287,7 +287,12 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 			"read_file",
 		)
 		if opts.IncludeToolUseRule && readFileAllowed {
-			skillIntro += " To use a skill, read its SKILL.md file using the read_file tool."
+			skillIntro += " A skill that lists a <command> can be run directly with that" +
+				" command on your first move — its description already carries what the" +
+				" common case needs. Read that skill's SKILL.md only when you need a flag," +
+				" a boundary or a response rule the description does not give you." +
+				" A skill with no <command> works the other way round: read its SKILL.md" +
+				" with the read_file tool before you run anything."
 		}
 		if strings.Contains(skillsSummary, "<confirm>true</confirm>") {
 			skillIntro += " A skill marked <confirm>true</confirm> is a long-running, real-world action" +

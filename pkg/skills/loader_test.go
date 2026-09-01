@@ -120,7 +120,7 @@ func TestExtractFrontmatter(t *testing.T) {
 			assert.NotEmpty(t, frontmatter, "Frontmatter should be extracted for %s line endings", tc.lineEndingType)
 
 			// Parse YAML to get name and description (parseSimpleYAML now handles all line ending types)
-			yamlMeta := sl.parseSimpleYAML(frontmatter)
+			yamlMeta := sl.parseSimpleYAML(frontmatter, "")
 			assert.Equal(
 				t,
 				tc.expectedName,
