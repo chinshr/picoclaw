@@ -53,6 +53,40 @@ type UsageInfo struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// PromptTokensDetails carries the provider's breakdown of PromptTokens.
+	// The field that matters is cached_tokens: how much of the prompt was
+	// served from the provider's prefix cache instead of being prefilled.
+	//
+	// Moonshot/Kimi caching is fully automatic — no cache key, no cache
+	// object, nothing to send — and its only requirement is that the prefix be
+	// byte-stable across calls. That makes cached_tokens the ONLY way to know
+	// whether it is working: a cache miss and a cache hit look identical from
+	// the request side. See voice-turn-triage finding 15.
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+
+	// CachedTokens is the same number where a provider reports it flat rather
+	// than nested. Read both through Cached().
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+// PromptTokensDetails is the OpenAI-shaped breakdown of prompt tokens.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// Cached returns prompt tokens served from the provider's cache, from
+// whichever shape the provider used. Zero means "none reported", which is not
+// the same as "none cached" — a provider that omits the field entirely also
+// returns zero, so read it alongside PromptTokens.
+func (u *UsageInfo) Cached() int {
+	if u == nil {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return u.CachedTokens
 }
 
 // CacheControl marks a content block for LLM-side prefix caching.

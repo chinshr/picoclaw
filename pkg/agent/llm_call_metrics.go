@@ -117,9 +117,18 @@ func systemSlotChars(messages []providers.Message) string {
 // Not every provider returns usage, and a streaming response may return it only
 // on the final frame. Zero here means "not reported", never "zero tokens" —
 // pair it with prompt_chars on the request event, which is always present.
-func usageCounts(resp *providers.LLMResponse) (prompt, completion, total int) {
+//
+// `cached` is the finding-15 number. Moonshot/Kimi prefix caching is fully
+// automatic and invisible from the request side, so this is the only way to
+// tell a cache hit from a cold prefill — which is the difference between "our
+// 39 KB prompt is nearly free" and "we pay ~10k tokens of prefill on every
+// call", and those prescribe opposite work.
+func usageCounts(resp *providers.LLMResponse) (prompt, completion, total, cached int) {
 	if resp == nil || resp.Usage == nil {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
-	return resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens
+	return resp.Usage.PromptTokens,
+		resp.Usage.CompletionTokens,
+		resp.Usage.TotalTokens,
+		resp.Usage.Cached()
 }

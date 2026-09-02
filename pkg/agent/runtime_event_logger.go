@@ -310,6 +310,15 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		if payload.CompletionTokens > 0 {
 			fields["completion_tokens"] = payload.CompletionTokens
 		}
+		// Finding 15's decisive number. A high cache_hit_pct means the prompt
+		// is nearly free and its size is not the latency problem; a zero
+		// against a large prompt_tokens means we prefill it cold every call.
+		if payload.CachedTokens > 0 {
+			fields["cached_tokens"] = payload.CachedTokens
+			if payload.PromptTokens > 0 {
+				fields["cache_hit_pct"] = 100 * payload.CachedTokens / payload.PromptTokens
+			}
+		}
 	case LLMRetryPayload:
 		fields["attempt"] = payload.Attempt
 		fields["max_retries"] = payload.MaxRetries

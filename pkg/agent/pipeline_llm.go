@@ -603,7 +603,7 @@ func (p *Pipeline) CallLLM(
 	if streamed {
 		ttft = exec.firstTokenAt.Sub(llmCallStart)
 	}
-	promptTokens, completionTokens, totalTokens := usageCounts(exec.response)
+	promptTokens, completionTokens, totalTokens, cachedTokens := usageCounts(exec.response)
 
 	// A replay made no provider call; counting it would make the turn look
 	// like it spent time it did not (finding 01's whole point is that it
@@ -627,6 +627,7 @@ func (p *Pipeline) CallLLM(
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			TotalTokens:      totalTokens,
+			CachedTokens:     cachedTokens,
 		},
 	)
 
@@ -646,6 +647,10 @@ func (p *Pipeline) CallLLM(
 		llmResponseFields["prompt_tokens"] = exec.response.Usage.PromptTokens
 		llmResponseFields["completion_tokens"] = exec.response.Usage.CompletionTokens
 		llmResponseFields["total_tokens"] = exec.response.Usage.TotalTokens
+		if cachedTokens > 0 && promptTokens > 0 {
+			llmResponseFields["cached_tokens"] = cachedTokens
+			llmResponseFields["cache_hit_pct"] = 100 * cachedTokens / promptTokens
+		}
 	}
 	if streamed {
 		// gen_ms is what is left after the wait: the part that scales with how

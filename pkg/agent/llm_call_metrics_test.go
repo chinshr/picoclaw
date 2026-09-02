@@ -135,9 +135,9 @@ func TestUsageCountsToleratesMissingUsage(t *testing.T) {
 		"nil response": nil,
 		"nil usage":    {Content: "hi"},
 	} {
-		p, c, total := usageCounts(resp)
-		if p != 0 || c != 0 || total != 0 {
-			t.Fatalf("%s: got %d/%d/%d, want zeros", name, p, c, total)
+		p, c, total, cached := usageCounts(resp)
+		if p != 0 || c != 0 || total != 0 || cached != 0 {
+			t.Fatalf("%s: got %d/%d/%d/%d, want zeros", name, p, c, total, cached)
 		}
 	}
 }
@@ -146,9 +146,46 @@ func TestUsageCountsReadsReportedUsage(t *testing.T) {
 	resp := &providers.LLMResponse{Usage: &providers.UsageInfo{
 		PromptTokens: 12000, CompletionTokens: 40, TotalTokens: 12040,
 	}}
-	p, c, total := usageCounts(resp)
+	p, c, total, cached := usageCounts(resp)
 	if p != 12000 || c != 40 || total != 12040 {
 		t.Fatalf("got %d/%d/%d", p, c, total)
+	}
+	if cached != 0 {
+		t.Fatalf("cached = %d, want 0 when the provider reported none", cached)
+	}
+}
+
+// Finding 15's decisive number, in both shapes providers use for it.
+//
+// Kimi prefix caching is fully automatic: nothing in the request switches it on
+// or off, and its only requirement is a byte-stable prefix. So a cache hit and
+// a cold prefill are indistinguishable from our side — cached_tokens in the
+// response is the whole of the evidence, and dropping it on the floor (which is
+// what happened before 2026-09-02) leaves the question unanswerable.
+func TestUsageCountsReadsCachedTokensFromEitherShape(t *testing.T) {
+	nested := &providers.LLMResponse{Usage: &providers.UsageInfo{
+		PromptTokens:        12000,
+		PromptTokensDetails: &providers.PromptTokensDetails{CachedTokens: 11776},
+	}}
+	if _, _, _, cached := usageCounts(nested); cached != 11776 {
+		t.Fatalf("nested cached = %d, want 11776", cached)
+	}
+
+	flat := &providers.LLMResponse{Usage: &providers.UsageInfo{
+		PromptTokens: 12000, CachedTokens: 11776,
+	}}
+	if _, _, _, cached := usageCounts(flat); cached != 11776 {
+		t.Fatalf("flat cached = %d, want 11776", cached)
+	}
+}
+
+// A provider that omits the field reports zero, and so does a genuine cold
+// prefill. The two are not distinguishable here, which is why the payload
+// comment says to read cached_tokens alongside prompt_tokens rather than alone.
+func TestZeroCachedTokensIsNotEvidenceOfACacheMiss(t *testing.T) {
+	resp := &providers.LLMResponse{Usage: &providers.UsageInfo{PromptTokens: 12000}}
+	if _, _, _, cached := usageCounts(resp); cached != 0 {
+		t.Fatalf("cached = %d, want 0", cached)
 	}
 }
 

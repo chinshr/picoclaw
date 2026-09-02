@@ -128,6 +128,13 @@ type LLMResponsePayload struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+
+	// CachedTokens is how much of PromptTokens the provider served from its
+	// prefix cache. Kimi caching is automatic and invisible in the request, so
+	// this is the only observable that says whether it is working — and
+	// therefore whether the system prompt's size costs anything at all.
+	// Zero can mean "none cached" OR "not reported"; read it with PromptTokens.
+	CachedTokens int
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.
