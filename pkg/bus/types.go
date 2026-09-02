@@ -18,6 +18,18 @@ const (
 	RawKeyControl       = "pico_control"        // ControlCommit | ControlAbort (no turn run)
 	ControlCommit       = "commit"
 	ControlAbort        = "abort"
+
+	// RawKeyNoReply marks a passive notice: a message whose only purpose is to
+	// be true in the history the next real turn reads. "1" means append it to
+	// the session history and run nothing — no turn, no steering, no provider
+	// call, no reply. Finding 13 in library-claw's voice-turn-triage: the voice
+	// bridge's own [SYSTEM EVENT] lines ("I gave up waiting", "that reply was
+	// never spoken") arrived as ordinary user messages, so each one bought a
+	// full model call and spoke. For voice.turn.timeout that closes a loop —
+	// the notice exists BECAUSE the turn is slow, and the extra call makes it
+	// slower. Prose in the notice ("Do not respond to this event.") cannot fix
+	// it: the dispatch is decided before the model reads a word.
+	RawKeyNoReply = "pico_no_reply"
 )
 
 // InboundContext captures the normalized, platform-agnostic facts about an

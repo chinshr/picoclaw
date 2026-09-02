@@ -602,6 +602,27 @@ func (c *VoiceBridgeChannel) handleMessage(vc *voiceConn, msg VoiceMessage) {
 	}
 }
 
+// applyTurnMetadata threads the message.send payload flags into the Raw
+// metadata the agent pipeline reads.
+//
+//   - speculative + speculation_id (docs/design/speculative-turns.md): the turn
+//     runs with a reversible history write and bails on tool calls.
+//   - no_reply: the message is a passive notice — recorded in history, no turn.
+//     The agent loop intercepts it before dispatch (bus.RawKeyNoReply).
+//
+// Both are additive; a payload without them behaves exactly as before.
+func applyTurnMetadata(payload map[string]any, metadata map[string]string) {
+	if spec, _ := payload[PayloadKeySpeculative].(bool); spec {
+		if specID, _ := payload[PayloadKeySpeculationID].(string); strings.TrimSpace(specID) != "" {
+			metadata[bus.RawKeySpeculative] = "1"
+			metadata[bus.RawKeySpeculationID] = specID
+		}
+	}
+	if noReply, _ := payload[PayloadKeyNoReply].(bool); noReply {
+		metadata[bus.RawKeyNoReply] = "1"
+	}
+}
+
 func (c *VoiceBridgeChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) {
 	content, _ := msg.Payload[PayloadKeyContent].(string)
 	if strings.TrimSpace(content) == "" {
@@ -626,16 +647,7 @@ func (c *VoiceBridgeChannel) handleMessageSend(vc *voiceConn, msg VoiceMessage) 
 		"conn_id":    vc.id,
 	}
 
-	// Speculative turns (docs/design/speculative-turns.md): thread the flag +
-	// id into the agent pipeline via Raw so the turn runs with a reversible
-	// history write and bails on tool calls. Additive — ignored until the
-	// agent speculation core is present.
-	if spec, _ := msg.Payload[PayloadKeySpeculative].(bool); spec {
-		if specID, _ := msg.Payload[PayloadKeySpeculationID].(string); strings.TrimSpace(specID) != "" {
-			metadata[bus.RawKeySpeculative] = "1"
-			metadata[bus.RawKeySpeculationID] = specID
-		}
-	}
+	applyTurnMetadata(msg.Payload, metadata)
 
 	logger.DebugCF("voice", "Received message", map[string]any{
 		"session_id": sessionID,

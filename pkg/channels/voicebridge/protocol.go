@@ -35,6 +35,10 @@ const (
 	PayloadKeySpeculative   = "speculative"
 	PayloadKeySpeculationID = "speculation_id"
 
+	// PayloadKeyNoReply marks a message.send as a passive notice: record it in
+	// the session history, run nothing. See bus.RawKeyNoReply.
+	PayloadKeyNoReply = "no_reply"
+
 	MessageKindThought = "thought"
 )
 

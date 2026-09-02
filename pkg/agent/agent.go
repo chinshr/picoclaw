@@ -180,6 +180,17 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				continue
 			}
 
+			// Passive notice (bus.RawKeyNoReply): history, not a turn.
+			// Intercept BEFORE dispatch — a notice must never start a turn of
+			// its own, and must never be merged into a running one as steering.
+			// Falls through to the normal path only if the session cannot be
+			// resolved, so the line is never silently lost.
+			if msg.Context.Raw[bus.RawKeyNoReply] == "1" {
+				if al.handlePassiveNotice(msg) {
+					continue
+				}
+			}
+
 			// Pre-agent intake (hooks.intake). An attachment is an independent
 			// unit of work: merged into a running turn as steering it would be
 			// collapsed into that turn's single reply, which is how a burst of
