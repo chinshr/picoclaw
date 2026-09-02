@@ -136,6 +136,11 @@ func (p *Pipeline) CallLLM(
 		carriedResponse = al.speculation.takeCarry(ts.sessionKey, ts.userMessage)
 	}
 
+	// Finding 15: how big is what we are about to send? Measured before the
+	// call, because a call that wedges never reaches the response event and the
+	// size is the first thing anyone will want to know about it.
+	promptChars, toolsChars := requestCharCounts(exec.callMessages, exec.providerToolDefs)
+
 	if carriedResponse == nil {
 		al.emitEvent(
 			runtimeevents.KindAgentLLMRequest,
@@ -146,6 +151,8 @@ func (p *Pipeline) CallLLM(
 				ToolsCount:    len(exec.providerToolDefs),
 				MaxTokens:     ts.agent.MaxTokens,
 				Temperature:   ts.agent.Temperature,
+				PromptChars:   promptChars,
+				ToolsChars:    toolsChars,
 			},
 		)
 
@@ -159,6 +166,8 @@ func (p *Pipeline) CallLLM(
 				"max_tokens":        ts.agent.MaxTokens,
 				"temperature":       ts.agent.Temperature,
 				"system_prompt_len": len(exec.callMessages[0].Content),
+				"prompt_chars":      promptChars,
+				"tools_chars":       toolsChars,
 			})
 		logger.DebugCF("agent", "Full LLM request",
 			map[string]any{
@@ -182,6 +191,11 @@ func (p *Pipeline) CallLLM(
 	// Wall time of this one call. Covers streaming, retries and provider
 	// fallback — everything between having a request and having a response.
 	llmCallStart := time.Now()
+	// Per-call, not per-turn: a tool turn makes several calls through this same
+	// exec, and a stale first-token stamp would report the second call's TTFT
+	// as the first call's.
+	exec.firstTokenAt = time.Time{}
+	exec.streamChunks = 0
 
 	// LLM call closure with fallback support
 	callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
@@ -575,15 +589,42 @@ func (p *Pipeline) CallLLM(
 		)
 	}
 	llmCallDuration := time.Since(llmCallStart)
+
+	// Finding 15. duration_ms alone cannot separate "the provider took 14 s to
+	// say the first word" from "the provider streamed promptly and generated
+	// for 14 s". The first scales with prompt size, the second with output
+	// length, and they have no fix in common.
+	var (
+		ttft     time.Duration
+		streamed = !exec.firstTokenAt.IsZero()
+	)
+	if streamed {
+		ttft = exec.firstTokenAt.Sub(llmCallStart)
+	}
+	promptTokens, completionTokens, totalTokens := usageCounts(exec.response)
+
+	// A replay made no provider call; counting it would make the turn look
+	// like it spent time it did not (finding 01's whole point is that it
+	// didn't).
+	if carriedResponse == nil {
+		ts.recordProviderCall(llmCallDuration, ttft, promptChars)
+	}
+
 	al.emitEvent(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
-			ContentLen:   len(exec.response.Content),
-			ToolCalls:    len(exec.response.ToolCalls),
-			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
-			Replayed:     carriedResponse != nil,
-			Duration:     llmCallDuration,
+			ContentLen:       len(exec.response.Content),
+			ToolCalls:        len(exec.response.ToolCalls),
+			HasReasoning:     exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+			Replayed:         carriedResponse != nil,
+			Duration:         llmCallDuration,
+			TTFT:             ttft,
+			Streamed:         streamed,
+			Chunks:           exec.streamChunks,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
 		},
 	)
 
@@ -594,6 +635,7 @@ func (p *Pipeline) CallLLM(
 		"replayed":       carriedResponse != nil,
 		"content_chars":  len(exec.response.Content),
 		"tool_calls":     len(exec.response.ToolCalls),
+		"prompt_chars":   promptChars,
 		"reasoning":      exec.response.Reasoning,
 		"target_channel": al.targetReasoningChannelID(ts.channel),
 		"channel":        ts.channel,
@@ -602,6 +644,18 @@ func (p *Pipeline) CallLLM(
 		llmResponseFields["prompt_tokens"] = exec.response.Usage.PromptTokens
 		llmResponseFields["completion_tokens"] = exec.response.Usage.CompletionTokens
 		llmResponseFields["total_tokens"] = exec.response.Usage.TotalTokens
+	}
+	if streamed {
+		// gen_ms is what is left after the wait: the part that scales with how
+		// much was said, as opposed to ttft_ms, which scales with how much was
+		// sent. Reading one without the other is how a slow turn gets blamed on
+		// the wrong half of the call.
+		llmResponseFields["ttft_ms"] = ttft.Milliseconds()
+		llmResponseFields["gen_ms"] = (llmCallDuration - ttft).Milliseconds()
+		llmResponseFields["chunks"] = exec.streamChunks
+		if genMS := (llmCallDuration - ttft).Milliseconds(); genMS > 0 && completionTokens > 0 {
+			llmResponseFields["tokens_per_sec"] = float64(completionTokens) * 1000 / float64(genMS)
+		}
 	}
 	logger.DebugCF("agent", "LLM response", llmResponseFields)
 

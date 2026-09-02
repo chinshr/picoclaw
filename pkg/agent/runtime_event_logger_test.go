@@ -418,3 +418,103 @@ func TestCloseRuntimeEventLoggerSubscriptionWaitsForDrain(t *testing.T) {
 		t.Fatalf("handled = %d, want 2", got)
 	}
 }
+
+// Finding 15. appendRuntimeEventPayloadSummary is a whitelist: a payload field
+// it does not name never reaches a log line, however carefully it was measured.
+// This pins the split — ttft_ms and gen_ms — to the log, because instrumentation
+// that is invisible in `library claw gateway logs` is instrumentation nobody
+// will use.
+func TestLLMResponseLogFieldsCarryTheTTFTSplit(t *testing.T) {
+	fields := runtimeEventLogFields(runtimeevents.Event{
+		Kind:     runtimeevents.KindAgentLLMResponse,
+		Severity: runtimeevents.SeverityInfo,
+		Source:   runtimeevents.Source{Component: "agent", Name: "main"},
+		Payload: LLMResponsePayload{
+			ContentLen:       17,
+			Duration:         15 * time.Second,
+			TTFT:             14 * time.Second,
+			Streamed:         true,
+			Chunks:           3,
+			PromptTokens:     48000,
+			CompletionTokens: 6,
+		},
+	})
+
+	if fields["ttft_ms"] != int64(14000) {
+		t.Fatalf("ttft_ms = %v, want 14000", fields["ttft_ms"])
+	}
+	if fields["gen_ms"] != int64(1000) {
+		t.Fatalf("gen_ms = %v, want 1000", fields["gen_ms"])
+	}
+	if fields["prompt_tokens"] != 48000 || fields["completion_tokens"] != 6 {
+		t.Fatalf("token counts missing: %#v", fields)
+	}
+}
+
+// A call that did not stream has no TTFT. Logging zero would read as "the first
+// token was instant", which is the opposite of the truth; the field must be
+// absent and streamed=false must say why.
+func TestNonStreamedResponseOmitsTTFTRatherThanLoggingZero(t *testing.T) {
+	fields := runtimeEventLogFields(runtimeevents.Event{
+		Kind:     runtimeevents.KindAgentLLMResponse,
+		Severity: runtimeevents.SeverityInfo,
+		Source:   runtimeevents.Source{Component: "agent", Name: "main"},
+		Payload:  LLMResponsePayload{ContentLen: 17, Duration: 15 * time.Second},
+	})
+
+	if _, ok := fields["ttft_ms"]; ok {
+		t.Fatalf("ttft_ms present for a call that never streamed: %#v", fields)
+	}
+	if fields["streamed"] != false {
+		t.Fatalf("streamed flag missing: %#v", fields)
+	}
+}
+
+// outside_ms is the fork every slow-turn investigation starts with: time in the
+// model versus time around it.
+func TestTurnEndLogFieldsSplitProviderTimeFromTheRest(t *testing.T) {
+	fields := runtimeEventLogFields(runtimeevents.Event{
+		Kind:     runtimeevents.KindAgentTurnEnd,
+		Severity: runtimeevents.SeverityInfo,
+		Source:   runtimeevents.Source{Component: "agent", Name: "main"},
+		Payload: TurnEndPayload{
+			Status:           TurnEndStatusCompleted,
+			Iterations:       6,
+			Duration:         84 * time.Second,
+			ProviderCalls:    6,
+			ProviderDuration: 71 * time.Second,
+			ProviderTTFT:     60 * time.Second,
+			MaxPromptChars:   61000,
+		},
+	})
+
+	if fields["provider_ms"] != int64(71000) {
+		t.Fatalf("provider_ms = %v, want 71000", fields["provider_ms"])
+	}
+	if fields["outside_ms"] != int64(13000) {
+		t.Fatalf("outside_ms = %v, want 13000", fields["outside_ms"])
+	}
+	if fields["max_prompt_chars"] != 61000 || fields["provider_calls"] != 6 {
+		t.Fatalf("turn-level provider accounting missing: %#v", fields)
+	}
+}
+
+// The request event fires before the call. For a turn that wedges and never
+// returns, this is the only record of how big the request that wedged it was.
+func TestLLMRequestLogFieldsCarryPromptSize(t *testing.T) {
+	fields := runtimeEventLogFields(runtimeevents.Event{
+		Kind:     runtimeevents.KindAgentLLMRequest,
+		Severity: runtimeevents.SeverityInfo,
+		Source:   runtimeevents.Source{Component: "agent", Name: "main"},
+		Payload: LLMRequestPayload{
+			Model:         "kimi-k3",
+			MessagesCount: 41,
+			PromptChars:   61000,
+			ToolsChars:    3200,
+		},
+	})
+
+	if fields["prompt_chars"] != 61000 || fields["tools_chars"] != 3200 {
+		t.Fatalf("request size missing: %#v", fields)
+	}
+}

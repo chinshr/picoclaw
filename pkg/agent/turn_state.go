@@ -148,6 +148,12 @@ type turnExecution struct {
 	gracefulTerminal    bool
 	useNativeSearch     bool
 
+	// Streaming timing for THIS iteration's call (finding 15). Reset before
+	// every call; stamped by recordChunk in pipeline_streaming.go. firstTokenAt
+	// zero after a call means the call did not stream, not that it was instant.
+	firstTokenAt time.Time
+	streamChunks int
+
 	// Phase tracking
 	phase LLMPhase
 
@@ -207,6 +213,17 @@ type turnState struct {
 	iteration    int
 	startedAt    time.Time
 	finalContent string
+
+	// Provider accounting for the whole turn (finding 15). A turn's
+	// duration_ms has always been visible; what it was SPENT on has not. With
+	// providerDuration alongside it, "97 s" splits at a glance into time inside
+	// the model and time around it (tools, compaction, steering, waiting) —
+	// which is the first fork in any investigation of a slow turn and, until
+	// now, a guess.
+	providerCalls    int
+	providerDuration time.Duration
+	providerTTFT     time.Duration
+	maxPromptChars   int
 
 	followUps []bus.InboundMessage
 
@@ -394,6 +411,27 @@ func (ts *turnState) setIteration(iteration int) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.iteration = iteration
+}
+
+// recordProviderCall accumulates one LLM call into the turn's totals.
+// ttft is zero for a non-streaming call; it is summed anyway, so
+// providerTTFT is a lower bound and must be read against providerCalls.
+func (ts *turnState) recordProviderCall(d, ttft time.Duration, promptChars int) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.providerCalls++
+	ts.providerDuration += d
+	ts.providerTTFT += ttft
+	if promptChars > ts.maxPromptChars {
+		ts.maxPromptChars = promptChars
+	}
+}
+
+// providerTotals snapshots the turn's accumulated provider accounting.
+func (ts *turnState) providerTotals() (calls int, total, ttft time.Duration, maxPromptChars int) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.providerCalls, ts.providerDuration, ts.providerTTFT, ts.maxPromptChars
 }
 
 func (ts *turnState) currentIteration() int {

@@ -71,8 +71,17 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		chunkCount++
 		if firstChunkAt.IsZero() {
 			firstChunkAt = now
+			// Finding 15: the response event needs time-to-first-token, and
+			// this is the only place that knows it. Local vars die with this
+			// function; exec outlives it.
+			if exec != nil {
+				exec.firstTokenAt = now
+			}
 		}
 		lastChunkAt = now
+		if exec != nil {
+			exec.streamChunks = chunkCount
+		}
 	}
 	var response *providers.LLMResponse
 	var streamErr error

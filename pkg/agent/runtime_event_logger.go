@@ -259,11 +259,27 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["iterations_total"] = payload.Iterations
 		fields["duration_ms"] = payload.Duration.Milliseconds()
 		fields["final_len"] = payload.FinalContentLen
+		// Finding 15. duration_ms says a turn took 97 s; these say where.
+		// outside_ms is the half this repo's findings can move.
+		fields["provider_calls"] = payload.ProviderCalls
+		fields["provider_ms"] = payload.ProviderDuration.Milliseconds()
+		fields["outside_ms"] = (payload.Duration - payload.ProviderDuration).Milliseconds()
+		if payload.ProviderTTFT > 0 {
+			fields["provider_ttft_ms"] = payload.ProviderTTFT.Milliseconds()
+		}
+		if payload.MaxPromptChars > 0 {
+			fields["max_prompt_chars"] = payload.MaxPromptChars
+		}
 	case LLMRequestPayload:
 		fields["model"] = payload.Model
 		fields["messages"] = payload.MessagesCount
 		fields["tools"] = payload.ToolsCount
 		fields["max_tokens"] = payload.MaxTokens
+		// The size of what we sent, on the event that fires BEFORE the call.
+		// A wedged turn never reaches the response event; this is the only
+		// record of how big the request that wedged it was.
+		fields["prompt_chars"] = payload.PromptChars
+		fields["tools_chars"] = payload.ToolsChars
 	case LLMDeltaPayload:
 		fields["content_delta_len"] = payload.ContentDeltaLen
 		fields["reasoning_delta_len"] = payload.ReasoningDeltaLen
@@ -274,6 +290,22 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["duration_ms"] = payload.Duration.Milliseconds()
 		if payload.Replayed {
 			fields["replayed"] = true
+		}
+		// Finding 15: the split. ttft_ms scales with what we sent, gen_ms with
+		// what came back. streamed=false means TTFT is unknown for this call,
+		// not zero — the absence of ttft_ms is the signal.
+		if payload.Streamed {
+			fields["ttft_ms"] = payload.TTFT.Milliseconds()
+			fields["gen_ms"] = (payload.Duration - payload.TTFT).Milliseconds()
+			fields["chunks"] = payload.Chunks
+		} else if !payload.Replayed {
+			fields["streamed"] = false
+		}
+		if payload.PromptTokens > 0 {
+			fields["prompt_tokens"] = payload.PromptTokens
+		}
+		if payload.CompletionTokens > 0 {
+			fields["completion_tokens"] = payload.CompletionTokens
 		}
 	case LLMRetryPayload:
 		fields["attempt"] = payload.Attempt

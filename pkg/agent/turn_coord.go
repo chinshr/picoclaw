@@ -42,6 +42,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				finalSuccessfulPath = append([]string(nil), attemptedSkills...)
 			}
 		}
+		providerCalls, providerDuration, providerTTFT, maxPromptChars := ts.providerTotals()
 		al.emitEvent(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
@@ -50,6 +51,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				Workspace:             ts.workspace,
 				Iterations:            ts.currentIteration(),
 				Duration:              time.Since(ts.startedAt),
+				ProviderCalls:         providerCalls,
+				ProviderDuration:      providerDuration,
+				ProviderTTFT:          providerTTFT,
+				MaxPromptChars:        maxPromptChars,
 				FinalContentLen:       ts.finalContentLen(),
 				UserMessage:           ts.userMessage,
 				FinalContent:          ts.finalContentSnapshot(),

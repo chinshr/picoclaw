@@ -40,11 +40,25 @@ type ToolExecutionRecord struct {
 
 // TurnEndPayload describes the completion of a turn.
 type TurnEndPayload struct {
-	Status                TurnEndStatus
-	Workspace             string
-	Iterations            int
-	Duration              time.Duration
-	FinalContentLen       int
+	Status          TurnEndStatus
+	Workspace       string
+	Iterations      int
+	Duration        time.Duration
+	FinalContentLen int
+
+	// Provider accounting (finding 15). Duration minus ProviderDuration is the
+	// time the turn spent OUTSIDE the model — tools, compaction, steering,
+	// waiting — which is the half this repo's findings can actually change.
+	// ProviderCalls counts real calls only: a speculation carry-forward replay
+	// (finding 01) made no call and is excluded, so it cannot inflate the
+	// total with time nobody spent. ProviderTTFT sums only the calls that
+	// streamed, so read it against ProviderCalls, never as a per-call mean.
+	// MaxPromptChars is the largest single request in the turn.
+	ProviderCalls    int
+	ProviderDuration time.Duration
+	ProviderTTFT     time.Duration
+	MaxPromptChars   int
+
 	UserMessage           string
 	FinalContent          string
 	ActiveSkills          []string
@@ -62,6 +76,14 @@ type LLMRequestPayload struct {
 	ToolsCount    int
 	MaxTokens     int
 	Temperature   float64
+	// PromptChars is the assembled request size: every message's content plus
+	// the serialized tool definitions. Counted here rather than taken from the
+	// provider's usage because usage only exists once the call RETURNS — and a
+	// call that never returns is exactly the case worth measuring. Chars, not
+	// tokens: the tokenizer is the provider's, and a ratio is enough to tell a
+	// 4k prompt from a 60k one.
+	PromptChars int
+	ToolsChars  int
 }
 
 // LLMResponsePayload describes an inbound LLM response.
@@ -81,6 +103,26 @@ type LLMResponsePayload struct {
 	// tool rounds makes one call per round, and only the sum was
 	// previously observable (agent.turn.end duration_ms).
 	Duration time.Duration
+
+	// TTFT is time to first token: from the same start as Duration to the
+	// first streamed chunk. Zero when the call did not stream (no streamer for
+	// the channel, a non-streaming provider, or a replay), which is NOT the
+	// same as "instant" — read it together with Streamed.
+	//
+	// This is the split finding 15 exists for. Duration alone cannot tell a
+	// provider that took 14 s to say the first word from one that streamed
+	// promptly and generated for 14 s. The first is queueing and prefill and
+	// scales with PromptChars; the second scales with CompletionTokens. They
+	// have nothing in common and no shared fix.
+	TTFT     time.Duration
+	Streamed bool
+	Chunks   int
+
+	// Usage as the provider reported it. Zero when the provider omitted it;
+	// PromptChars on the request event is the always-available fallback.
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.
