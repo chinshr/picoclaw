@@ -140,6 +140,7 @@ func (p *Pipeline) CallLLM(
 	// call, because a call that wedges never reaches the response event and the
 	// size is the first thing anyone will want to know about it.
 	promptChars, toolsChars := requestCharCounts(exec.callMessages, exec.providerToolDefs)
+	promptSlots := systemSlotChars(exec.callMessages)
 
 	if carriedResponse == nil {
 		al.emitEvent(
@@ -153,6 +154,7 @@ func (p *Pipeline) CallLLM(
 				Temperature:   ts.agent.Temperature,
 				PromptChars:   promptChars,
 				ToolsChars:    toolsChars,
+				PromptSlots:   promptSlots,
 			},
 		)
 

@@ -84,6 +84,11 @@ type LLMRequestPayload struct {
 	// 4k prompt from a 60k one.
 	PromptChars int
 	ToolsChars  int
+	// PromptSlots breaks PromptChars down by prompt slot, largest first
+	// ("workspace=12029 skill_catalog=4180 …"). Empty when the adapter is not
+	// block-aware. This is what turns the prompt size from a fact into a
+	// decision about what to cut.
+	PromptSlots string
 }
 
 // LLMResponsePayload describes an inbound LLM response.

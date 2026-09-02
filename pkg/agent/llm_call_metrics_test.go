@@ -7,12 +7,35 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-// The number this instrumentation exists to produce is "how big was the thing
-// we sent", and the biggest single contributor — the system prompt, carrying
-// the skills catalog — moves into SystemParts on a cache-aware adapter. A
-// counter that reads Content only reports a large prompt as a small one, which
-// is worse than not measuring it: it actively exonerates the real cause.
-func TestPromptCharsCountsSystemParts(t *testing.T) {
+// The system prompt is the biggest block there is, and on a cache-aware adapter
+// it exists TWICE in the same message: as blocks in SystemParts, and as their
+// concatenation in Content for adapters that do not read blocks. Exactly one
+// goes on the wire. The first version of this counter summed both and reported
+// 77,642 chars for a prompt of about 39,000 — a factor of two on the only
+// number the function exists to produce, in the direction that would have sent
+// us hunting a prompt-size problem twice as large as the real one.
+func TestPromptCharsDoesNotDoubleCountSystemParts(t *testing.T) {
+	msgs := []providers.Message{
+		{
+			Role:    "system",
+			Content: "0123456789abcde", // 15: the concatenation
+			SystemParts: []providers.ContentBlock{
+				{Type: "text", Text: "0123456789"}, // 10
+				{Type: "text", Text: "abcde"},      // 5
+			},
+		},
+		{Role: "user", Content: "hello"}, // 5
+	}
+	got, _ := requestCharCounts(msgs, nil)
+	if got != 20 {
+		t.Fatalf("promptChars = %d, want 20 (15 system + 5 user, counted once)", got)
+	}
+}
+
+// When only the blocks are populated they must still be counted: an adapter
+// that fills SystemParts and leaves Content empty would otherwise report the
+// largest message in the request as zero.
+func TestPromptCharsCountsSystemPartsWhenContentIsEmpty(t *testing.T) {
 	msgs := []providers.Message{
 		{Role: "system", SystemParts: []providers.ContentBlock{
 			{Type: "text", Text: "0123456789"}, // 10
@@ -22,7 +45,45 @@ func TestPromptCharsCountsSystemParts(t *testing.T) {
 	}
 	got, _ := requestCharCounts(msgs, nil)
 	if got != 20 {
-		t.Fatalf("promptChars = %d, want 20 (10+5 system parts + 5 content)", got)
+		t.Fatalf("promptChars = %d, want 20", got)
+	}
+}
+
+// "The prompt is 39k characters" is a fact. "12k of them are the workspace
+// bootstrap files" is a decision about what to cut, which is the only reason
+// the fact is interesting. Largest slot first, and stable between turns so two
+// log lines can be compared by eye.
+func TestSystemSlotCharsRanksLargestFirst(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: "system", SystemParts: []providers.ContentBlock{
+			{Type: "text", Text: "abc", PromptSlot: "skill_catalog"},
+			{Type: "text", Text: "0123456789", PromptSlot: "workspace"},
+			{Type: "text", Text: "xy", PromptSlot: "skill_catalog"},
+		}},
+	}
+	got := systemSlotChars(msgs)
+	if got != "workspace=10 skill_catalog=5" {
+		t.Fatalf("prompt_slots = %q, want \"workspace=10 skill_catalog=5\"", got)
+	}
+}
+
+// A block with no slot is still part of the prompt; dropping it would make the
+// breakdown quietly fail to add up to prompt_chars.
+func TestSystemSlotCharsLabelsUnattributedBlocks(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: "system", SystemParts: []providers.ContentBlock{{Type: "text", Text: "abcd"}}},
+	}
+	if got := systemSlotChars(msgs); got != "unattributed=4" {
+		t.Fatalf("prompt_slots = %q", got)
+	}
+}
+
+// No blocks means no breakdown, and the field is omitted rather than logged
+// empty.
+func TestSystemSlotCharsEmptyWithoutBlocks(t *testing.T) {
+	msgs := []providers.Message{{Role: "system", Content: "plain"}}
+	if got := systemSlotChars(msgs); got != "" {
+		t.Fatalf("prompt_slots = %q, want empty", got)
 	}
 }
 

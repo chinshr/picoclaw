@@ -280,6 +280,9 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		// record of how big the request that wedged it was.
 		fields["prompt_chars"] = payload.PromptChars
 		fields["tools_chars"] = payload.ToolsChars
+		if payload.PromptSlots != "" {
+			fields["prompt_slots"] = payload.PromptSlots
+		}
 	case LLMDeltaPayload:
 		fields["content_delta_len"] = payload.ContentDeltaLen
 		fields["reasoning_delta_len"] = payload.ReasoningDeltaLen

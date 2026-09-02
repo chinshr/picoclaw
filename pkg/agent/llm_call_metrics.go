@@ -17,6 +17,10 @@ package agent
 // So: measure the size going out, and split the time coming back.
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -32,13 +36,23 @@ func requestCharCounts(
 	tools []providers.ToolDefinition,
 ) (promptChars, toolsChars int) {
 	for i := range messages {
-		promptChars += len(messages[i].Content)
-		// A cache-aware adapter carries the system prompt in SystemParts rather
-		// than Content. Missing those would under-report the one message most
-		// worth measuring — the skills catalog lives there.
-		for _, part := range messages[i].SystemParts {
-			promptChars += len(part.Text)
+		// Content and SystemParts are the SAME payload in two shapes, not two
+		// payloads: context.go builds one system message carrying the blocks in
+		// SystemParts for cache-aware adapters AND their concatenation in
+		// Content as the fallback. Exactly one of them goes on the wire. Summing
+		// both double-counts the system prompt — which is the largest block
+		// there is, so the error is roughly a factor of two on the only number
+		// this function exists to produce. Take the larger instead.
+		chars := len(messages[i].Content)
+		if parts := 0; len(messages[i].SystemParts) > 0 {
+			for _, part := range messages[i].SystemParts {
+				parts += len(part.Text)
+			}
+			if parts > chars {
+				chars = parts
+			}
 		}
+		promptChars += chars
 		promptChars += len(messages[i].ReasoningContent)
 		for _, tc := range messages[i].ToolCalls {
 			if tc.Function == nil {
@@ -51,6 +65,51 @@ func requestCharCounts(
 		toolsChars += len(t.Function.Name) + len(t.Function.Description)
 	}
 	return promptChars, toolsChars
+}
+
+// systemSlotChars breaks the system prompt down by prompt slot.
+//
+// "The prompt is 39k characters" is a fact; "the prompt is 39k characters and
+// 12k of them are the workspace bootstrap files" is a decision. The blocks
+// already carry their slot (context.go builds them that way), so this costs a
+// walk over a slice that is already in memory.
+//
+// Returned as a sorted "slot=chars" string rather than a map: it goes into one
+// log field that a person reads, and map iteration order would reshuffle it
+// between turns and make two lines impossible to compare by eye.
+func systemSlotChars(messages []providers.Message) string {
+	totals := map[string]int{}
+	for i := range messages {
+		for _, part := range messages[i].SystemParts {
+			slot := part.PromptSlot
+			if slot == "" {
+				slot = "unattributed"
+			}
+			totals[slot] += len(part.Text)
+		}
+	}
+	if len(totals) == 0 {
+		return ""
+	}
+	slots := make([]string, 0, len(totals))
+	for slot := range totals {
+		slots = append(slots, slot)
+	}
+	// Largest first: the answer to "what is this prompt made of" is the top line.
+	sort.Slice(slots, func(a, b int) bool {
+		if totals[slots[a]] != totals[slots[b]] {
+			return totals[slots[a]] > totals[slots[b]]
+		}
+		return slots[a] < slots[b]
+	})
+	var b strings.Builder
+	for i, slot := range slots {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%d", slot, totals[slot])
+	}
+	return b.String()
 }
 
 // usageCounts reads provider-reported usage, tolerating its absence.
