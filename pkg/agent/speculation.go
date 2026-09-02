@@ -44,6 +44,14 @@ type speculationEntry struct {
 	sessionKey  string
 	baseLen     int
 	baseSummary string
+	// added counts the messages THIS speculation persisted. abort() removes
+	// exactly that block instead of truncating to baseLen, because the bridge
+	// sends turn.abort and the re-sent transcript back to back on one
+	// websocket — field 2026-08-31 has both at 18:16:49.850 — and if the
+	// re-send wins that race a blind truncate deletes the visitor's real
+	// message along with the speculation's. Under-counting leaves residue;
+	// over-truncating loses the question. Prefer residue.
+	added int
 }
 
 // carriedDecision is the LLM response a speculative turn produced immediately
@@ -108,14 +116,40 @@ func (m *speculationManager) abort(store session.SessionStore, specID string) {
 		return
 	}
 	h := store.GetHistory(entry.sessionKey)
-	if len(h) > entry.baseLen {
-		store.SetHistory(entry.sessionKey, h[:entry.baseLen])
+	// Splice out only this speculation's own block. Truncating to baseLen was
+	// correct while the abort was guaranteed to land before anything else
+	// wrote, and that guarantee does not hold: `turn.abort` and the re-sent
+	// transcript leave the bridge in the same millisecond on the same socket.
+	// When the re-send won, the blind truncate ate the visitor's real message
+	// and the turn answered a question that was no longer in its history.
+	if end := entry.baseLen + entry.added; len(h) > entry.baseLen && entry.added > 0 {
+		if end > len(h) {
+			end = len(h)
+		}
+		kept := make([]providers.Message, 0, len(h)-(end-entry.baseLen))
+		kept = append(kept, h[:entry.baseLen]...)
+		kept = append(kept, h[end:]...)
+		store.SetHistory(entry.sessionKey, kept)
 	}
 	store.SetSummary(entry.sessionKey, entry.baseSummary)
 	if err := store.Save(entry.sessionKey); err != nil {
 		logger.WarnCF("agent", "speculation abort save failed", map[string]any{
 			"speculation_id": specID, "session_key": entry.sessionKey, "error": err.Error(),
 		})
+	}
+}
+
+// notePersisted records that the speculative turn wrote one more message, so
+// abort() knows the size of the block it owns. Called from the persist sites on
+// the speculative path; a miss costs residue, never a lost message.
+func (m *speculationManager) notePersisted(specID string) {
+	if m == nil || specID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry := m.pending[specID]; entry != nil {
+		entry.added++
 	}
 }
 

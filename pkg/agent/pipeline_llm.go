@@ -766,6 +766,9 @@ func (p *Pipeline) CallLLM(
 	if !ts.opts.NoHistory {
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
 		ts.recordPersistedMessage(assistantMsg)
+		if ts.speculative && al != nil && al.speculation != nil {
+			al.speculation.notePersisted(ts.speculationID)
+		}
 		ts.ingestMessage(turnCtx, al, assistantMsg)
 	}
 	if shouldPublishPicoToolCallInterim {

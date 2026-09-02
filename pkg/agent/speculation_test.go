@@ -55,9 +55,13 @@ func TestSpeculationAbortTruncatesAndRestoresSummary(t *testing.T) {
 	m := newSpeculationManager()
 	// Speculative turn starts: snapshot base (len 1, base summary).
 	m.begin("spec1", key, len(store.GetHistory(key)), store.GetSummary(key))
-	// Speculative turn persisted user + assistant + mutated summary.
+	// Speculative turn persisted user + assistant + mutated summary. Each
+	// persist reports itself so abort removes exactly its own block rather than
+	// truncating everything past baseLen (see speculation_abort_ordering_test).
 	store.AddMessage(key, "user", "provisional")
+	m.notePersisted("spec1")
 	store.AddMessage(key, "assistant", "speculative reply")
+	m.notePersisted("spec1")
 	store.SetSummary(key, "mutated summary")
 
 	m.abort(store, "spec1")

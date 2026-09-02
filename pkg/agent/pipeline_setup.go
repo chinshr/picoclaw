@@ -138,6 +138,9 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)
 		}
 		ts.recordPersistedMessage(rootMsg)
+		if ts.speculative && p.al != nil && p.al.speculation != nil {
+			p.al.speculation.notePersisted(ts.speculationID)
+		}
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
