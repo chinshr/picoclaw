@@ -561,6 +561,21 @@ func (p *Provider) ChatStreamEvents(
 
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 	requestBody["stream"] = true
+	// Ask for the usage frame. A streamed OpenAI-compatible response carries no
+	// usage at all unless this is set, so without it prompt_tokens,
+	// completion_tokens and — the one that matters —
+	// prompt_tokens_details.cached_tokens never arrive, and there is no way to
+	// tell a warm prefix cache from a cold prefill.
+	//
+	// Kimi/Moonshot caching is fully automatic and invisible in the request, so
+	// that response field is the entire evidence. See library-claw
+	// docs/software/voice-turn-triage/15-provider-call-time.md.
+	//
+	// Opt-out for endpoints that reject the field: set
+	// "stream_include_usage": false in the model's options.
+	if include, ok := options["stream_include_usage"].(bool); !ok || include {
+		requestBody["stream_options"] = map[string]any{"include_usage": true}
+	}
 
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {

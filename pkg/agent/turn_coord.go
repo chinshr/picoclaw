@@ -203,8 +203,22 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			return turnResult{}, callErr
 		}
 		messages = exec.messages
-		pendingMessages = exec.pendingMessages
 		finalContent = exec.finalContent
+		// NOT `pendingMessages = exec.pendingMessages`.
+		//
+		// That line double-injected every steering message (library-claw
+		// voice-turn-triage finding 13, item 6 — long suspected to be double
+		// LOGGING, confirmed real on 2026-09-02: one 55-character sentence
+		// arrived as `count=2 total_content_len=110`, and the message count went
+		// 23 -> 25).
+		//
+		// The next iteration drains exec.pendingMessages into the local at the
+		// top of the loop with `append`. Seeding the local from the same slice
+		// here meant the message was in it twice by the time it was injected —
+		// so the visitor's words entered the context twice, and every later call
+		// in the turn carried both copies. exec.pendingMessages is the single
+		// source of truth between iterations; the local starts each one empty.
+		pendingMessages = nil
 
 		switch ctrl {
 		case ControlContinue:
