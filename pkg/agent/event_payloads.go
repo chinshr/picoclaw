@@ -84,15 +84,23 @@ type LLMRequestPayload struct {
 	// 4k prompt from a 60k one.
 	PromptChars int
 	ToolsChars  int
-	// PromptSlots breaks PromptChars down by prompt slot, largest first
-	// ("workspace=12029 skill_catalog=4180 …"). Empty when the adapter is not
-	// block-aware. This is what turns the prompt size from a fact into a
-	// decision about what to cut.
-	PromptSlots string
+	// PromptBlocks is the system message as sent: one entry per content block,
+	// keyed by slot, largest first. NOT a composition breakdown — on the cached
+	// path the whole static prompt is deliberately ONE block (one cache_control
+	// marker), so this reports "identity=39377" for a block that also holds the
+	// workspace files, the skill catalog and memory.
+	//
+	// For what the prompt is made of, read ContextBuilder's
+	// "System prompt built ... slots=" line, emitted when the prompt is built.
+	PromptBlocks string
 }
 
 // LLMResponsePayload describes an inbound LLM response.
 type LLMResponsePayload struct {
+	// Model is the model this response came from (after any failover), so a
+	// response line stands alone: `library claw metrics` builds a per-model
+	// baseline from response events without joining back to the request.
+	Model        string
 	ContentLen   int
 	ToolCalls    int
 	HasReasoning bool

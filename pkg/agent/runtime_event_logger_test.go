@@ -430,6 +430,7 @@ func TestLLMResponseLogFieldsCarryTheTTFTSplit(t *testing.T) {
 		Severity: runtimeevents.SeverityInfo,
 		Source:   runtimeevents.Source{Component: "agent", Name: "main"},
 		Payload: LLMResponsePayload{
+			Model:            "kimi-k3",
 			ContentLen:       17,
 			Duration:         15 * time.Second,
 			TTFT:             14 * time.Second,
@@ -448,6 +449,10 @@ func TestLLMResponseLogFieldsCarryTheTTFTSplit(t *testing.T) {
 	}
 	if fields["prompt_tokens"] != 48000 || fields["completion_tokens"] != 6 {
 		t.Fatalf("token counts missing: %#v", fields)
+	}
+	// The per-model baseline reads model off the response line itself.
+	if fields["model"] != "kimi-k3" {
+		t.Fatalf("model = %v, want kimi-k3", fields["model"])
 	}
 }
 

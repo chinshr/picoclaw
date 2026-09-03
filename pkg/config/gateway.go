@@ -11,15 +11,32 @@ import (
 
 const DefaultGatewayLogLevel = "warn"
 
+// GatewayConfig's only secret is HooksToken, so it is the only field that
+// round-trips through .security.yml (yaml tags below). The non-secret fields
+// stay in config.json. Without this split the token had nowhere durable to
+// live: SecureString never serializes to config.json, and the whole gateway
+// block used to be excluded from .security.yml, so any SaveConfig (onboard,
+// auth, mcp) silently dropped it and /hooks/session-note went dark.
 type GatewayConfig struct {
-	Host      string `json:"host"                env:"PICOCLAW_GATEWAY_HOST"`
-	Port      int    `json:"port"                env:"PICOCLAW_GATEWAY_PORT"`
-	HotReload bool   `json:"hot_reload"          env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
-	LogLevel  string `json:"log_level,omitempty" env:"PICOCLAW_LOG_LEVEL"`
+	Host      string `json:"host"                yaml:"-" env:"PICOCLAW_GATEWAY_HOST"`
+	Port      int    `json:"port"                yaml:"-" env:"PICOCLAW_GATEWAY_PORT"`
+	HotReload bool   `json:"hot_reload"          yaml:"-" env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
+	LogLevel  string `json:"log_level,omitempty" yaml:"-" env:"PICOCLAW_LOG_LEVEL"`
 	// HooksToken authorizes out-of-band POSTs to /hooks/session-note (workers
 	// mirroring their platform-posted lines into session history). Empty
 	// disables the endpoint. Supports enc:// / file:// refs like other secrets.
-	HooksToken SecureString `json:"hooks_token,omitzero" env:"PICOCLAW_HOOKS_TOKEN"`
+	// Lives in .security.yml under gateway.hooks_token (or the env var).
+	HooksToken SecureString `json:"hooks_token,omitzero" yaml:"hooks_token,omitempty" env:"PICOCLAW_HOOKS_TOKEN"`
+}
+
+// IsZero lets yaml's omitempty drop the whole gateway block from
+// .security.yml when there is no secret to store, instead of writing
+// "gateway: {}". Only consulted by the yaml encoder (json has no omitzero on
+// the Gateway field). Deliberately not SecureString.IsZero: that one inspects
+// its caller's file to tell yaml from json, and from here the caller is this
+// method, not the yaml encoder, so it would always report zero.
+func (g GatewayConfig) IsZero() bool {
+	return g.HooksToken.String() == ""
 }
 
 func canonicalGatewayLogLevel(level logger.LogLevel) string {

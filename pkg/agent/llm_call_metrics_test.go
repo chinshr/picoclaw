@@ -49,11 +49,15 @@ func TestPromptCharsCountsSystemPartsWhenContentIsEmpty(t *testing.T) {
 	}
 }
 
-// "The prompt is 39k characters" is a fact. "12k of them are the workspace
-// bootstrap files" is a decision about what to cut, which is the only reason
-// the fact is interesting. Largest slot first, and stable between turns so two
-// log lines can be compared by eye.
-func TestSystemSlotCharsRanksLargestFirst(t *testing.T) {
+// Largest block first, and stable between turns so two log lines can be
+// compared by eye.
+//
+// This measures blocks as sent, not composition: on the cached path the whole
+// static prompt is one block by design (one cache_control marker for the
+// provider's prefix cache), so a real turn reports "identity=39377" for a block
+// that also holds the workspace files and the skill catalog. The composition
+// lives in ContextBuilder's "System prompt built ... slots=" line instead.
+func TestSystemBlockCharsRanksLargestFirst(t *testing.T) {
 	msgs := []providers.Message{
 		{Role: "system", SystemParts: []providers.ContentBlock{
 			{Type: "text", Text: "abc", PromptSlot: "skill_catalog"},
@@ -61,29 +65,29 @@ func TestSystemSlotCharsRanksLargestFirst(t *testing.T) {
 			{Type: "text", Text: "xy", PromptSlot: "skill_catalog"},
 		}},
 	}
-	got := systemSlotChars(msgs)
+	got := systemBlockChars(msgs)
 	if got != "workspace=10 skill_catalog=5" {
-		t.Fatalf("prompt_slots = %q, want \"workspace=10 skill_catalog=5\"", got)
+		t.Fatalf("prompt_blocks = %q, want \"workspace=10 skill_catalog=5\"", got)
 	}
 }
 
 // A block with no slot is still part of the prompt; dropping it would make the
 // breakdown quietly fail to add up to prompt_chars.
-func TestSystemSlotCharsLabelsUnattributedBlocks(t *testing.T) {
+func TestSystemBlockCharsLabelsUnattributedBlocks(t *testing.T) {
 	msgs := []providers.Message{
 		{Role: "system", SystemParts: []providers.ContentBlock{{Type: "text", Text: "abcd"}}},
 	}
-	if got := systemSlotChars(msgs); got != "unattributed=4" {
-		t.Fatalf("prompt_slots = %q", got)
+	if got := systemBlockChars(msgs); got != "unattributed=4" {
+		t.Fatalf("prompt_blocks = %q", got)
 	}
 }
 
 // No blocks means no breakdown, and the field is omitted rather than logged
 // empty.
-func TestSystemSlotCharsEmptyWithoutBlocks(t *testing.T) {
+func TestSystemBlockCharsEmptyWithoutBlocks(t *testing.T) {
 	msgs := []providers.Message{{Role: "system", Content: "plain"}}
-	if got := systemSlotChars(msgs); got != "" {
-		t.Fatalf("prompt_slots = %q, want empty", got)
+	if got := systemBlockChars(msgs); got != "" {
+		t.Fatalf("prompt_blocks = %q, want empty", got)
 	}
 }
 
@@ -235,5 +239,33 @@ func TestProviderTotalsZeroValue(t *testing.T) {
 	calls, total, ttft, maxPrompt := ts.providerTotals()
 	if calls != 0 || total != 0 || ttft != 0 || maxPrompt != 0 {
 		t.Fatalf("got %d/%s/%s/%d, want zeros", calls, total, ttft, maxPrompt)
+	}
+}
+
+// The composition, which the per-request field cannot see. ContextBuilder logs
+// this once when it builds the cached prompt — the number that answers "what is
+// the system prompt actually made of".
+func TestPromptSlotBreakdownRanksLargestFirst(t *testing.T) {
+	parts := []PromptPart{
+		{Slot: PromptSlotSkillCatalog, Content: "abc"},
+		{Slot: PromptSlotWorkspace, Content: "0123456789"},
+		{Slot: PromptSlotSkillCatalog, Content: "xy"},
+		{Slot: PromptSlotMemory, Content: "mm"},
+	}
+	got := promptSlotBreakdown(parts)
+	if got != "workspace=10 skill_catalog=5 memory=2" {
+		t.Fatalf("slots = %q", got)
+	}
+}
+
+func TestPromptSlotBreakdownLabelsUnslottedParts(t *testing.T) {
+	if got := promptSlotBreakdown([]PromptPart{{Content: "abcd"}}); got != "unattributed=4" {
+		t.Fatalf("slots = %q", got)
+	}
+}
+
+func TestPromptSlotBreakdownEmptyForNoParts(t *testing.T) {
+	if got := promptSlotBreakdown(nil); got != "" {
+		t.Fatalf("slots = %q, want empty", got)
 	}
 }

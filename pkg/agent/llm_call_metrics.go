@@ -67,17 +67,29 @@ func requestCharCounts(
 	return promptChars, toolsChars
 }
 
-// systemSlotChars breaks the system prompt down by prompt slot.
+// systemBlockChars measures the system message as it goes on the wire: one
+// entry per content block, keyed by the block's slot.
 //
-// "The prompt is 39k characters" is a fact; "the prompt is 39k characters and
-// 12k of them are the workspace bootstrap files" is a decision. The blocks
-// already carry their slot (context.go builds them that way), so this costs a
-// walk over a slice that is already in memory.
+// It reports BLOCKS, not composition, and the distinction matters. On the
+// cached path — which is every ordinary turn — context.go deliberately collapses
+// the whole static prompt into a SINGLE block so there is one `cache_control`
+// marker to anchor the provider's prefix cache. That block is labelled
+// `identity` because that is the slot its placement rule allows, and it
+// contains the workspace files, the skill catalog and memory too.
+//
+// So `identity=39377` here does not mean 39 KB of identity. It means one
+// 39 KB block, and the composition inside it is not visible from this side by
+// construction.
+//
+// For the composition, read the `System prompt built ... slots=` line that
+// ContextBuilder emits whenever it (re)builds the cached prompt — once per
+// process, and again whenever a workspace file changes. It is a static property
+// of the workspace, so per-request was always the wrong place for it.
 //
 // Returned as a sorted "slot=chars" string rather than a map: it goes into one
 // log field that a person reads, and map iteration order would reshuffle it
 // between turns and make two lines impossible to compare by eye.
-func systemSlotChars(messages []providers.Message) string {
+func systemBlockChars(messages []providers.Message) string {
 	totals := map[string]int{}
 	for i := range messages {
 		for _, part := range messages[i].SystemParts {

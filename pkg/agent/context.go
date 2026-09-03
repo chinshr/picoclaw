@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +35,12 @@ type ContextBuilder struct {
 	// The cache auto-invalidates when workspace source files change (mtime check).
 	systemPromptMutex  sync.RWMutex
 	cachedSystemPrompt string
-	cachedAt           time.Time // max observed mtime across tracked paths at cache build time
+	// cachedSlotSizes is the "slot=chars" breakdown of cachedSystemPrompt,
+	// rebuilt with it. The cached prompt reaches the provider as ONE opaque
+	// block (one cache_control marker), so this is the only place the
+	// composition is still visible.
+	cachedSlotSizes string
+	cachedAt        time.Time // max observed mtime across tracked paths at cache build time
 
 	// existedAtCache tracks which source file paths existed the last time the
 	// cache was built. This lets sourceFilesChanged detect files that are newly
@@ -382,18 +388,68 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	// rebuild. The alternative (baseline after build) risks caching stale
 	// content with a too-new baseline, making the staleness invisible.
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPrompt()
+	parts := cb.BuildSystemPromptParts()
+	prompt := renderPromptPartsLegacy(parts)
 	cb.cachedSystemPrompt = prompt
+	cb.cachedSlotSizes = promptSlotBreakdown(parts)
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
 
-	logger.DebugCF("agent", "System prompt cached",
+	// Logged at Info, and only when the prompt is actually (re)built — which is
+	// once per process and again whenever a workspace file changes. This is a
+	// static property of the workspace, so repeating it on every request was
+	// noise; the per-request `prompt_blocks` field cannot see inside the cached
+	// block at all, because the whole point of the cache is that it is one
+	// opaque string with one cache_control marker.
+	//
+	// This is the number that answers "what is the system prompt made of":
+	//
+	//   System prompt built  length=39377  slots="workspace=26197 skill_catalog=8180 memory=1908 identity=3092"
+	logger.InfoCF("agent", "System prompt built",
 		map[string]any{
 			"length": len(prompt),
+			"slots":  cb.cachedSlotSizes,
 		})
 
 	return prompt
+}
+
+// promptSlotBreakdown renders "slot=chars" pairs, largest first — the same
+// shape as the per-request prompt_blocks field, so the two can be read together.
+//
+// Sorted by size and then by name so two log lines from different runs can be
+// compared by eye; map iteration order would reshuffle it every time.
+func promptSlotBreakdown(parts []PromptPart) string {
+	totals := map[string]int{}
+	for _, part := range parts {
+		slot := string(part.Slot)
+		if slot == "" {
+			slot = "unattributed"
+		}
+		totals[slot] += len(part.Content)
+	}
+	if len(totals) == 0 {
+		return ""
+	}
+	slots := make([]string, 0, len(totals))
+	for slot := range totals {
+		slots = append(slots, slot)
+	}
+	sort.Slice(slots, func(a, b int) bool {
+		if totals[slots[a]] != totals[slots[b]] {
+			return totals[slots[a]] > totals[slots[b]]
+		}
+		return slots[a] < slots[b]
+	})
+	var sb strings.Builder
+	for i, slot := range slots {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		fmt.Fprintf(&sb, "%s=%d", slot, totals[slot])
+	}
+	return sb.String()
 }
 
 func (cb *ContextBuilder) buildSystemPromptForRequest(
